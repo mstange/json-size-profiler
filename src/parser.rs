@@ -4,17 +4,17 @@ use std::fmt;
 use std::iter::Peekable;
 use std::str::FromStr;
 
-use crate::JsonValue;
+use crate::{JsonValue, JsonValueWithSpan, Position, Span};
 
 #[derive(Debug)]
 pub struct JsonParseError {
     msg: String,
-    line: usize,
-    col: usize,
+    line: u64,
+    col: u64,
 }
 
 impl JsonParseError {
-    fn new(msg: String, line: usize, col: usize) -> JsonParseError {
+    fn new(msg: String, line: u64, col: u64) -> JsonParseError {
         JsonParseError { msg, line, col }
     }
 }
@@ -31,7 +31,7 @@ impl fmt::Display for JsonParseError {
 
 impl std::error::Error for JsonParseError {}
 
-pub type JsonParseResult = Result<JsonValue, JsonParseError>;
+pub type JsonParseResult<T> = Result<T, JsonParseError>;
 
 // Note: char::is_ascii_whitespace is not available because some characters are not defined as
 // whitespace character in JSON spec. For example, U+000C FORM FEED is whitespace in Rust but
@@ -48,14 +48,16 @@ where
     I: Iterator<Item = char>,
 {
     chars: Peekable<I>,
-    line: usize,
-    col: usize,
+    offset: u64,
+    line: u64,
+    col: u64,
 }
 
 impl<I: Iterator<Item = char>> JsonParser<I> {
     pub fn new(it: I) -> Self {
         JsonParser {
             chars: it.peekable(),
+            offset: 0,
             line: 1,
             col: 0,
         }
@@ -80,6 +82,7 @@ impl<I: Iterator<Item = char>> JsonParser<I> {
         } else {
             self.col += 1;
         }
+        self.offset += c.len_utf8() as u64;
     }
 
     fn peek(&mut self) -> Result<char, JsonParseError> {
@@ -120,7 +123,7 @@ impl<I: Iterator<Item = char>> JsonParser<I> {
         }
     }
 
-    fn parse_object(&mut self) -> JsonParseResult {
+    fn parse_object(&mut self) -> JsonParseResult<JsonValue> {
         if self.consume()? != '{' {
             return self.err(String::from("Object must starts with '{'"));
         }
@@ -132,7 +135,7 @@ impl<I: Iterator<Item = char>> JsonParser<I> {
 
         let mut m = HashMap::new();
         loop {
-            let key = match self.parse_any()? {
+            let key = match self.parse_any_inner()? {
                 JsonValue::String(s) => s,
                 v => return self.err(format!("Key of object must be string but found {:?}", v)),
             };
@@ -160,7 +163,7 @@ impl<I: Iterator<Item = char>> JsonParser<I> {
         }
     }
 
-    fn parse_array(&mut self) -> JsonParseResult {
+    fn parse_array(&mut self) -> JsonParseResult<JsonValue> {
         if self.consume()? != '[' {
             return self.err(String::from("Array must starts with '['"));
         }
@@ -200,7 +203,7 @@ impl<I: Iterator<Item = char>> JsonParser<I> {
         Ok(())
     }
 
-    fn parse_string(&mut self) -> JsonParseResult {
+    fn parse_string(&mut self) -> JsonParseResult<JsonValue> {
         if self.consume()? != '"' {
             return self.err(String::from("String must starts with double quote"));
         }
@@ -276,28 +279,28 @@ impl<I: Iterator<Item = char>> JsonParser<I> {
         None
     }
 
-    fn parse_null(&mut self) -> JsonParseResult {
+    fn parse_null(&mut self) -> JsonParseResult<JsonValue> {
         match self.parse_constant("null") {
             Some(err) => Err(err),
             None => Ok(JsonValue::Null),
         }
     }
 
-    fn parse_true(&mut self) -> JsonParseResult {
+    fn parse_true(&mut self) -> JsonParseResult<JsonValue> {
         match self.parse_constant("true") {
             Some(err) => Err(err),
             None => Ok(JsonValue::Boolean(true)),
         }
     }
 
-    fn parse_false(&mut self) -> JsonParseResult {
+    fn parse_false(&mut self) -> JsonParseResult<JsonValue> {
         match self.parse_constant("false") {
             Some(err) => Err(err),
             None => Ok(JsonValue::Boolean(false)),
         }
     }
 
-    fn parse_number(&mut self) -> JsonParseResult {
+    fn parse_number(&mut self) -> JsonParseResult<JsonValue> {
         let neg = if self.peek()? == '-' {
             self.consume_no_skip().unwrap();
             true
@@ -379,7 +382,7 @@ impl<I: Iterator<Item = char>> JsonParser<I> {
         }
     }
 
-    fn parse_any(&mut self) -> JsonParseResult {
+    fn parse_any_inner(&mut self) -> JsonParseResult<JsonValue> {
         match self.peek()? {
             '0'..='9' | '-' => self.parse_number(),
             '"' => self.parse_string(),
@@ -392,7 +395,28 @@ impl<I: Iterator<Item = char>> JsonParser<I> {
         }
     }
 
-    pub fn parse(&mut self) -> JsonParseResult {
+    fn parse_any(&mut self) -> JsonParseResult<JsonValueWithSpan> {
+        let start_position = Position {
+            line: self.line,
+            column: self.col,
+        };
+        let start_offset = self.offset;
+        let value = self.parse_any_inner()?;
+        let end_position = Position {
+            line: self.line,
+            column: self.col,
+        };
+        let end_offset = self.offset;
+        let span = Span {
+            start_offset,
+            start_position,
+            end_offset,
+            end_position,
+        };
+        Ok(JsonValueWithSpan { span, value })
+    }
+
+    pub fn parse(&mut self) -> JsonParseResult<JsonValueWithSpan> {
         let v = self.parse_any()?;
 
         if let Some(c) = self.next() {
@@ -406,7 +430,7 @@ impl<I: Iterator<Item = char>> JsonParser<I> {
     }
 }
 
-impl FromStr for JsonValue {
+impl FromStr for JsonValueWithSpan {
     type Err = JsonParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {

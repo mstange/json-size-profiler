@@ -1,15 +1,15 @@
 [package]
-name = "tinyjson"
-version = "2.3.0"
+name = "json-bytes-breakdown"
+version = "0.0.1"
 edition = "2018"
-authors = ["rhysd <lin90162@yahoo.co.jp>"]
-description = "Tiny simple JSON parser/generator"
+authors = ["Markus Stange <mstange.moz@gmail.com>", "rhysd <lin90162@yahoo.co.jp>"]
+description = "Creates a Gecko profile to show what takes up the most bytes in a JSON input string."
 license = "MIT"
 readme = "README.md"
 homepage = "https://github.com/rhysd/tinyjson"
 repository = "https://github.com/rhysd/tinyjson"
-keywords = ["json", "parser", "generator"]
-categories = ["encoding", "parsing"]
+keywords = ["json"]
+categories = [ "parsing"]
 
 include = [
   "Cargo.toml",
@@ -18,10 +18,8 @@ include = [
   "src/*.rs",
 ]
 
-[badges]
-maintenance = { status = "passively-maintained" }
-
 [dependencies]
+gecko_profile = "0.1.1"
 
 [dev-dependencies]
 walkdir = "2"
