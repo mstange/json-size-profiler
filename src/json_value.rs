@@ -11,8 +11,8 @@ pub enum JsonValue {
     Boolean(bool),
     String(String),
     Null,
-    Array(Vec<JsonValueWithSpan>),
-    Object(HashMap<String, JsonValueWithSpan>),
+    Array(Vec<JsonValue>),
+    Object(HashMap<String, JsonValue>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,12 +27,6 @@ pub struct Span {
     pub start_position: Position,
     pub end_offset: u64,
     pub end_position: Position,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct JsonValueWithSpan {
-    pub span: Span,
-    pub value: JsonValue,
 }
 
 pub trait InnerAsRef {
@@ -57,8 +51,8 @@ impl_inner_ref!(f64, Number(n) => n);
 impl_inner_ref!(bool, Boolean(b) => b);
 impl_inner_ref!(String, String(s) => s);
 impl_inner_ref!((), Null => &NULL);
-impl_inner_ref!(Vec<JsonValueWithSpan>, Array(a) => a);
-impl_inner_ref!(HashMap<String, JsonValueWithSpan>, Object(h) => h);
+impl_inner_ref!(Vec<JsonValue>, Array(a) => a);
+impl_inner_ref!(HashMap<String, JsonValue>, Object(h) => h);
 
 pub trait InnerAsRefMut {
     fn json_value_as_mut(v: &mut JsonValue) -> Option<&mut Self>;
@@ -81,8 +75,8 @@ macro_rules! impl_inner_ref_mut {
 impl_inner_ref_mut!(f64, Number(n) => n);
 impl_inner_ref_mut!(bool, Boolean(b) => b);
 impl_inner_ref_mut!(String, String(s) => s);
-impl_inner_ref_mut!(Vec<JsonValueWithSpan>, Array(a) => a);
-impl_inner_ref_mut!(HashMap<String, JsonValueWithSpan>, Object(h) => h);
+impl_inner_ref_mut!(Vec<JsonValue>, Array(a) => a);
+impl_inner_ref_mut!(HashMap<String, JsonValue>, Object(h) => h);
 
 // Note: matches! is available from Rust 1.42
 macro_rules! is_xxx {
@@ -126,7 +120,7 @@ impl<'a> Index<&'a str> for JsonValue {
         };
 
         match obj.get(key) {
-            Some(json) => &json.value,
+            Some(json) => json,
             None => panic!("Key '{}' was not found in {:?}", key, self),
         }
     }
@@ -143,7 +137,7 @@ impl Index<usize> for JsonValue {
                 index, self,
             ),
         };
-        &array[index].value
+        &array[index]
     }
 }
 
@@ -158,7 +152,7 @@ impl<'a> IndexMut<&'a str> for JsonValue {
         };
 
         if let Some(json) = obj.get_mut(key) {
-            &mut json.value
+            json
         } else {
             panic!("Key '{}' was not found in object", key)
         }
@@ -175,7 +169,7 @@ impl IndexMut<usize> for JsonValue {
             ),
         };
 
-        &mut array[index].value
+        &mut array[index]
     }
 }
 
@@ -219,5 +213,5 @@ impl_try_into!(f64, JsonValue::Number(n) => n);
 impl_try_into!(bool, JsonValue::Boolean(b) => b);
 impl_try_into!(String, JsonValue::String(s) => s);
 impl_try_into!((), JsonValue::Null => ());
-impl_try_into!(Vec<JsonValueWithSpan>, JsonValue::Array(a) => a);
-impl_try_into!(HashMap<String, JsonValueWithSpan>, JsonValue::Object(o) => o);
+impl_try_into!(Vec<JsonValue>, JsonValue::Array(a) => a);
+impl_try_into!(HashMap<String, JsonValue>, JsonValue::Object(o) => o);
