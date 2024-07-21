@@ -274,18 +274,51 @@ impl<I: Iterator<Item = u8>> JsonTokenizer<I> {
                     b'u' => {
                         let mut u = 0u16;
                         for _ in 0..4 {
-                            let c = self.consume()?;
-                            if let Some(h) = ascii_byte_to_hex_digit(c) {
+                            let b = self.consume_no_skip()?;
+                            if let Some(h) = ascii_byte_to_hex_digit(b) {
                                 u = u * 0x10 + h as u16;
                             } else {
-                                return self.err(format!("Unicode character must be \\uXXXX (X is hex character) format but found character '{}'", c));
+                                return self.err(format!("Unicode character must be \\uXXXX (X is hex character) format but found byte {b:#x}"));
                             }
                         }
-                        s.push((u & 0xf) as u8); // XXXmstange: untested
-                        s.push((u >> 8) as u8);
-                        // Additional \uXXXX character may follow. UTF-16 characters must be converted
-                        // into UTF-8 string as sequence because surrogate pairs must be considered
-                        // like "\uDBFF\uDFFF".
+                        let c = match u {
+                            0xD800..=0xDBFF => {
+                                // First surrogate
+
+                                // Parse the second surrogate, which must be directly following.
+                                if self.consume_no_skip()? != b'\\'
+                                    || self.consume_no_skip()? != b'u'
+                                {
+                                    return self.err(format!("First UTF-16 surragate {u:#x} must be directly followed by a second \\uXXXX surrogate."));
+                                }
+                                let mut u2 = 0u16;
+                                for _ in 0..4 {
+                                    let b = self.consume_no_skip()?;
+                                    if let Some(h) = ascii_byte_to_hex_digit(b) {
+                                        u2 = u2 * 0x10 + h as u16;
+                                    } else {
+                                        return self.err(format!("Unicode character must be \\uXXXX (X is hex character) format but found byte '{b:#x}'"));
+                                    }
+                                }
+                                if !matches!(u2, 0xDC00..=0xDFFF) {
+                                    return self.err(format!("First UTF-16 surrogate {u:#x} must be directly followed by a second \\uXXXX surrogate, but found something that's not a second surrogate: {u2:#x}."));
+                                }
+
+                                // Now we have both the first and the second surrogate. Assemble them into a char, the same way that char::decode_utf16 does it.
+                                let c =
+                                    (((u & 0x3ff) as u32) << 10 | (u2 & 0x3ff) as u32) + 0x1_0000;
+                                char::from_u32(c).unwrap()
+                            }
+                            0xDC00..=0xDFFF => {
+                                return self
+                                    .err(format!("Unpaired UTF-16 second surrogate: {u:#x}"));
+                            }
+                            _ => char::from_u32(u as u32).unwrap(),
+                        };
+                        match c.len_utf8() {
+                            1 => s.push(c as u8),
+                            _ => s.extend(c.encode_utf8(&mut [0; 4]).as_bytes()),
+                        }
                         continue;
                     }
                     c => return self.err(format!("'\\{}' is invalid escaped character", c)),
