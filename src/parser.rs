@@ -54,6 +54,27 @@ fn is_whitespace(c: u8) -> bool {
     matches!(c, 0x20 | 0xa | 0xd | 0x9)
 }
 
+pub trait JsonSessionObserver {
+    fn begin_object(&mut self, pos_at_obj_start: u64) -> Result<(), String>;
+    fn object_property(&mut self, pos: u64, property_name: String) -> Result<(), String>;
+    fn end_object(&mut self, pos_after_obj_end: u64) -> Result<(), String>;
+    fn begin_array(&mut self, pos_at_array_start: u64) -> Result<(), String>;
+    fn end_array(&mut self, pos_after_array_end: u64) -> Result<(), String>;
+    fn primitive_value(
+        &mut self,
+        pos_before: u64,
+        pos_after: u64,
+        value: JsonPrimitiveValue,
+    ) -> Result<(), String>;
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum JsonPrimitiveValue {
+    Number(f64),
+    Boolean(bool),
+    String(String),
+    Null,
+}
 pub struct JsonTokenizer<I: Iterator<Item = u8>> {
     bytes: Peekable<I>,
     offset: u64,
@@ -61,24 +82,34 @@ pub struct JsonTokenizer<I: Iterator<Item = u8>> {
     col: u64,
 }
 
-pub struct JsonParser<I: Iterator<Item = u8>> {
+pub struct JsonSession<'a, I: Iterator<Item = u8>, O: JsonSessionObserver> {
     tokenizer: JsonTokenizer<I>,
+    observer: &'a mut O,
 }
 
-impl<I: Iterator<Item = u8>> JsonParser<I> {
-    pub fn new(it: I) -> Self {
-        JsonParser {
+impl<'a, I: Iterator<Item = u8>, O: JsonSessionObserver> JsonSession<'a, I, O> {
+    pub fn new(it: I, observer: &'a mut O) -> Self {
+        JsonSession {
             tokenizer: JsonTokenizer::new(it),
+            observer,
         }
     }
 
-    fn parse_object(&mut self) -> JsonParseResult<JsonValue> {
+    fn parse_object(&mut self, pos_at_obj_start: u64) -> JsonParseResult<()> {
+        self.observer
+            .begin_object(pos_at_obj_start)
+            .or_else(|e| self.tokenizer.err(e))?;
+
+        let mut pos_before = self.tokenizer.offset;
         let first_token = self.tokenizer.next_token()?;
         if matches!(first_token, JsonToken::ObjClose) {
-            return Ok(JsonValue::Object(HashMap::new()));
+            let pos_after_obj_end = self.tokenizer.offset;
+            return self
+                .observer
+                .end_object(pos_after_obj_end)
+                .or_else(|e| self.tokenizer.err(e));
         }
 
-        let mut m = HashMap::new();
         let mut current_token = first_token;
         loop {
             let key = match current_token {
@@ -97,11 +128,20 @@ impl<I: Iterator<Item = u8>> JsonParser<I> {
                 ));
             }
 
-            m.insert(key, self.parse_any()?);
+            self.observer
+                .object_property(pos_before, key)
+                .or_else(|e| self.tokenizer.err(e))?;
+            self.parse_any()?;
 
             match self.tokenizer.next_token()? {
                 JsonToken::Comma => {}
-                JsonToken::ObjClose => return Ok(JsonValue::Object(m)),
+                JsonToken::ObjClose => {
+                    let pos_after_obj_end = self.tokenizer.offset;
+                    return self
+                        .observer
+                        .end_object(pos_after_obj_end)
+                        .or_else(|e| self.tokenizer.err(e));
+                }
                 c => {
                     return self.tokenizer.err(format!(
                         "',' or '}}' is expected for object but actually found '{c:?}'",
@@ -109,35 +149,39 @@ impl<I: Iterator<Item = u8>> JsonParser<I> {
                 }
             }
 
+            pos_before = self.tokenizer.offset;
             current_token = self.tokenizer.next_token()?;
         }
     }
 
-    fn parse_array(&mut self) -> JsonParseResult<JsonValue> {
+    fn parse_array(&mut self, pos_at_array_start: u64) -> JsonParseResult<()> {
+        self.observer
+            .begin_array(pos_at_array_start)
+            .or_else(|e| self.tokenizer.err(e))?;
+
+        let pos_before = self.tokenizer.offset;
         let first_token = self.tokenizer.next_token()?;
 
         if first_token == JsonToken::ArrayClose {
-            return Ok(JsonValue::Array(vec![]));
+            let pos_after_array_end = self.tokenizer.offset;
+            return self
+                .observer
+                .end_array(pos_after_array_end)
+                .or_else(|e| self.tokenizer.err(e));
         }
 
-        let first_value = match first_token {
-            JsonToken::Number(num) => JsonValue::Number(num),
-            JsonToken::True => JsonValue::Boolean(true),
-            JsonToken::False => JsonValue::Boolean(false),
-            JsonToken::String(s) => JsonValue::String(s),
-            JsonToken::Null => JsonValue::Null,
-            JsonToken::ArrayOpen => self.parse_array()?,
-            JsonToken::ObjOpen => self.parse_object()?,
-            JsonToken::Comma | JsonToken::ArrayClose | JsonToken::Colon | JsonToken::ObjClose => {
-                todo!()
-            }
-        };
+        self.parse_any_with_token(first_token, pos_before)?;
 
-        let mut v = vec![first_value];
         loop {
             match self.tokenizer.next_token()? {
                 JsonToken::Comma => {}
-                JsonToken::ArrayClose => return Ok(JsonValue::Array(v)),
+                JsonToken::ArrayClose => {
+                    let pos_after_array_end = self.tokenizer.offset;
+                    return self
+                        .observer
+                        .end_array(pos_after_array_end)
+                        .or_else(|e| self.tokenizer.err(e));
+                }
                 c => {
                     return self.tokenizer.err(format!(
                         "',' or ']' is expected for array but actually found '{c:?}'",
@@ -145,27 +189,40 @@ impl<I: Iterator<Item = u8>> JsonParser<I> {
                 }
             }
 
-            v.push(self.parse_any()?); // Next element
+            self.parse_any()?; // Next element
         }
     }
 
-    fn parse_any(&mut self) -> JsonParseResult<JsonValue> {
-        match self.tokenizer.next_token()? {
-            JsonToken::Number(num) => Ok(JsonValue::Number(num)),
-            JsonToken::True => Ok(JsonValue::Boolean(true)),
-            JsonToken::False => Ok(JsonValue::Boolean(false)),
-            JsonToken::String(s) => Ok(JsonValue::String(s)),
-            JsonToken::Null => Ok(JsonValue::Null),
-            JsonToken::ArrayOpen => self.parse_array(),
-            JsonToken::ObjOpen => self.parse_object(),
-            JsonToken::Comma | JsonToken::ArrayClose | JsonToken::Colon | JsonToken::ObjClose => {
-                todo!()
+    fn parse_any_with_token(&mut self, token: JsonToken, pos_before: u64) -> JsonParseResult<()> {
+        let value = match token {
+            JsonToken::Number(num) => JsonPrimitiveValue::Number(num),
+            JsonToken::True => JsonPrimitiveValue::Boolean(true),
+            JsonToken::False => JsonPrimitiveValue::Boolean(false),
+            JsonToken::String(s) => JsonPrimitiveValue::String(s),
+            JsonToken::Null => JsonPrimitiveValue::Null,
+            JsonToken::ArrayOpen => return self.parse_array(pos_before),
+            JsonToken::ObjOpen => return self.parse_object(pos_before),
+            t @ JsonToken::Comma
+            | t @ JsonToken::ArrayClose
+            | t @ JsonToken::Colon
+            | t @ JsonToken::ObjClose => {
+                return self.tokenizer.err(format!("Unexpected token {t:?}"));
             }
-        }
+        };
+        let pos_after = self.tokenizer.offset;
+        self.observer
+            .primitive_value(pos_before, pos_after, value)
+            .or_else(|e| self.tokenizer.err(e))
     }
 
-    pub fn parse(&mut self) -> JsonParseResult<JsonValue> {
-        let v = self.parse_any()?;
+    fn parse_any(&mut self) -> JsonParseResult<()> {
+        let pos_before = self.tokenizer.offset;
+        let token = self.tokenizer.next_token()?;
+        self.parse_any_with_token(token, pos_before)
+    }
+
+    pub fn parse(&mut self) -> JsonParseResult<()> {
+        self.parse_any()?;
 
         if let Some(c) = self.tokenizer.next() {
             return self
@@ -173,7 +230,107 @@ impl<I: Iterator<Item = u8>> JsonParser<I> {
                 .err(format!("Expected EOF but got character '{c:#x}'"));
         }
 
-        Ok(v)
+        Ok(())
+    }
+}
+
+pub struct JsonParser<I: Iterator<Item = u8>> {
+    iter: I,
+}
+
+struct JsonParserState {
+    stack: Vec<JsonParserStateStackEntry>,
+    final_value: Option<JsonValue>,
+}
+
+enum JsonParserStateStackEntry {
+    Array(Vec<JsonValue>),
+    Object(HashMap<String, JsonValue>, Option<String>),
+}
+
+impl JsonParserState {
+    pub fn new() -> Self {
+        Self {
+            stack: Vec::new(),
+            final_value: None,
+        }
+    }
+
+    fn put_value(&mut self, value: JsonValue) {
+        match self.stack.last_mut() {
+            None => self.final_value = Some(value),
+            Some(JsonParserStateStackEntry::Array(v)) => v.push(value),
+            Some(JsonParserStateStackEntry::Object(m, key)) => {
+                m.insert(key.take().unwrap(), value);
+            }
+        }
+    }
+}
+
+impl JsonSessionObserver for JsonParserState {
+    fn begin_object(&mut self, _pos_at_obj_start: u64) -> Result<(), String> {
+        self.stack
+            .push(JsonParserStateStackEntry::Object(HashMap::new(), None));
+        Ok(())
+    }
+
+    fn object_property(&mut self, _pos: u64, property_name: String) -> Result<(), String> {
+        match self.stack.last_mut().unwrap() {
+            JsonParserStateStackEntry::Object(_, key) => *key = Some(property_name),
+            _ => panic!(),
+        }
+        Ok(())
+    }
+
+    fn end_object(&mut self, _pos_after_obj_end: u64) -> Result<(), String> {
+        match self.stack.pop().unwrap() {
+            JsonParserStateStackEntry::Object(m, None) => self.put_value(JsonValue::Object(m)),
+            _ => panic!(),
+        }
+        Ok(())
+    }
+
+    fn begin_array(&mut self, _pos_at_array_start: u64) -> Result<(), String> {
+        self.stack
+            .push(JsonParserStateStackEntry::Array(Vec::new()));
+        Ok(())
+    }
+
+    fn end_array(&mut self, _pos_after_array_end: u64) -> Result<(), String> {
+        match self.stack.pop().unwrap() {
+            JsonParserStateStackEntry::Array(v) => self.put_value(JsonValue::Array(v)),
+            _ => panic!(),
+        }
+        Ok(())
+    }
+
+    fn primitive_value(
+        &mut self,
+        _pos_before: u64,
+        _pos_after: u64,
+        value: JsonPrimitiveValue,
+    ) -> Result<(), String> {
+        let value = match value {
+            JsonPrimitiveValue::Number(n) => JsonValue::Number(n),
+            JsonPrimitiveValue::Boolean(b) => JsonValue::Boolean(b),
+            JsonPrimitiveValue::String(s) => JsonValue::String(s),
+            JsonPrimitiveValue::Null => JsonValue::Null,
+        };
+        self.put_value(value);
+        Ok(())
+    }
+}
+
+impl<I: Iterator<Item = u8>> JsonParser<I> {
+    pub fn new(iter: I) -> Self {
+        JsonParser { iter }
+    }
+
+    pub fn parse(self) -> JsonParseResult<JsonValue> {
+        let mut state = JsonParserState::new();
+        let mut session = JsonSession::new(self.iter, &mut state);
+        session.parse()?;
+        Ok(state.final_value.take().unwrap())
     }
 }
 

@@ -49,10 +49,13 @@ impl<R: Read> Iterator for IoReadIterator<R> {
 }
 
 fn main() {
-    let file = File::open("/Users/mstange/Downloads/big-profile.json").unwrap();
+    // let file = File::open("/Users/mstange/Downloads/big-profile.json").unwrap();
+    let file =
+        &br#"{"hello": 5, "what": null, "yo": [], "aha": ["yeah", 43, { "false": false } ]}"#[..];
     let bytes = IoReadIterator::new(file);
-    let mut parser = parser::JsonParser::new(bytes);
-    let root_value_with_span = parser.parse().unwrap();
+    let parser = parser::JsonParser::new(bytes);
+    let root_value = parser.parse().unwrap();
+    dbg!(root_value);
 
     let profile = Profile::new(
         "JSON",
