@@ -3,6 +3,8 @@ use std::fmt;
 use std::iter::Peekable;
 use std::str::FromStr;
 
+use smallvec::SmallVec;
+
 use crate::json_value::JsonValue;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -416,7 +418,7 @@ impl<I: Iterator<Item = u8>> JsonTokenizer<I> {
             return self.err(String::from("String must starts with double quote"));
         }
 
-        let mut s = Vec::new();
+        let mut s = SmallVec::<[u8; 10]>::new();
         loop {
             let c = match self.consume_no_skip()? {
                 b'\\' => match self.consume_no_skip()? {
@@ -474,14 +476,14 @@ impl<I: Iterator<Item = u8>> JsonTokenizer<I> {
                         };
                         match c.len_utf8() {
                             1 => s.push(c as u8),
-                            _ => s.extend(c.encode_utf8(&mut [0; 4]).as_bytes()),
+                            _ => s.extend(c.encode_utf8(&mut [0; 4]).as_bytes().iter().cloned()),
                         }
                         continue;
                     }
                     c => return self.err(format!("'\\{}' is invalid escaped character", c)),
                 },
                 b'"' => {
-                    let s = String::from_utf8(s)
+                    let s = String::from_utf8(s.to_vec())
                         .or_else(|_| self.err("Invalid UTF-8 in string".into()))?;
                     return Ok(JsonToken::String(s));
                 }
@@ -549,7 +551,7 @@ impl<I: Iterator<Item = u8>> JsonTokenizer<I> {
             false
         };
 
-        let mut s = Vec::new();
+        let mut s = SmallVec::<[u8; 16]>::new();
         let mut saw_dot = false;
         let mut saw_exp = false;
 
