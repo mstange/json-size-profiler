@@ -10,10 +10,7 @@ use fxprof_processed_profile::{
     CategoryColor, CategoryHandle, CpuDelta, Frame, FrameFlags, FrameInfo, Profile,
     ReferenceTimestamp, SamplingInterval, StackHandle, StringHandle, ThreadHandle, Timestamp,
 };
-use parser::{JsonPrimitiveValue, JsonSessionObserver};
-
-mod json_value;
-mod parser;
+use tinyjson_session::{JsonPrimitiveValue, JsonSession, JsonSessionObserver};
 
 struct IoReadIterator<R> {
     reader: R,
@@ -64,7 +61,7 @@ fn main() {
     //     &br#"{"hello": 5, "what": null, "yo": [], "aha": ["yeah", 43, { "false": false } ]}"#[..];
     let bytes = IoReadIterator::new(file);
     let mut state = State::new("JSON", 4);
-    let mut parser = parser::JsonSession::new(bytes, &mut state);
+    let mut parser = JsonSession::new(bytes, &mut state);
     parser.parse().unwrap();
     let profile = state.finish();
 

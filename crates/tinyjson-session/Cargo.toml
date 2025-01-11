@@ -1,9 +1,9 @@
 [package]
-name = "json-size-profiler"
-version = "0.0.1"
+name = "tinyjson-session"
+version = "0.1.0"
 edition = "2018"
 authors = ["Markus Stange <mstange.moz@gmail.com>", "rhysd <lin90162@yahoo.co.jp>"]
-description = "Creates a Gecko profile to show what takes up the most bytes in a JSON input string."
+description = "Parses a JSON document and calls callbacks on a JsonSessionObserver."
 license = "MIT"
 readme = "README.md"
 repository = "https://github.com/mstange/json-size-profiler"
@@ -18,10 +18,4 @@ include = [
 ]
 
 [dependencies]
-fxprof-processed-profile = { git = "https://github.com/mstange/samply", branch = "stack-handle" }
-tinyjson-session = { path = "./crates/tinyjson-session" }
-serde_json = "1.0.120"
 smallvec = "1.13.2"
-
-[profile.release]
-debug = true
