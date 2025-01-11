@@ -58,7 +58,7 @@ fn is_whitespace(c: u8) -> bool {
 
 pub trait JsonSessionObserver {
     fn begin_object(&mut self, pos_at_obj_start: u64) -> Result<(), String>;
-    fn object_property(&mut self, pos: u64, property_name: String) -> Result<(), String>;
+    fn object_property(&mut self, pos_at_prop_key_start: u64, property_name: String) -> Result<(), String>;
     fn end_object(&mut self, pos_after_obj_end: u64) -> Result<(), String>;
     fn begin_array(&mut self, pos_at_array_start: u64) -> Result<(), String>;
     fn end_array(&mut self, pos_after_array_end: u64) -> Result<(), String>;

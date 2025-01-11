@@ -1,7 +1,7 @@
 use std::{
-    collections::HashMap,
     fs::File,
     io::{BufWriter, Read},
+    os::unix::fs::MetadataExt,
     path::PathBuf,
     time::SystemTime,
 };
@@ -10,6 +10,7 @@ use fxprof_processed_profile::{
     CategoryColor, CategoryHandle, CpuDelta, Frame, FrameFlags, FrameInfo, Profile,
     ReferenceTimestamp, SamplingInterval, StackHandle, StringHandle, ThreadHandle, Timestamp,
 };
+use indexmap::IndexMap;
 use tinyjson_session::{JsonPrimitiveValue, JsonSession, JsonSessionObserver};
 
 struct IoReadIterator<R> {
@@ -57,10 +58,35 @@ fn main() {
         .expect("Usage: cmd <FILENAME>")
         .into();
     let file = File::open(&path).unwrap();
+    let size = file.metadata().unwrap().size();
+
+    // How often should we flush aggregated samples? Depends on the size.
+    // If I want to limit to 100 samples, and I have 1000 bytes to parse,
+    // then, on average, I want just 1 sample per 10 bytes.
+    // Let's say I've just passed byte 100, and I have 9 stacks in my
+    // aggregation map. Flush them out.
+    // Now I've passed byte 200, and my aggregation map contains 15 entries.
+    // Flushing them out now would increase the total sample count to 9 + 15 = 24.
+    // 24 is more than 20, so I don't flush and keep aggregating.
+    // Now I've passed byte 300. Luckily a lot of the stuff between byte 200 and
+    // byte 300 was hitting stacks that were already in the map, and the map has
+    // only grown by 2 more entries. It now contains 17 entries.
+    // Flushing now would increase the total sample count to 9 + 17 = 26.
+    // That's below 30, so I can flush.
+    // If the aggregation map grows faster than the rate I was hoping for, that's
+    // too bad and I will end up emitting more than the MAX_SAMPLE_COUNT target.
+    // At the end of the input I definitely need to flush.
+    //
+    // Ok so at what points should I check whether I can flush? Probably at every
+    // update.
+    const MAX_SAMPLE_COUNT: u64 = 100_000;
+
+    let bytes_per_sample = (size / MAX_SAMPLE_COUNT).clamp(1, 1_000_000);
+
     // let file =
     //     &br#"{"hello": 5, "what": null, "yo": [], "aha": ["yeah", 43, { "false": false } ]}"#[..];
     let bytes = IoReadIterator::new(file);
-    let mut state = State::new("JSON", 4);
+    let mut state = State::new("JSON", bytes_per_sample);
     let mut parser = JsonSession::new(bytes, &mut state);
     parser.parse().unwrap();
     let profile = state.finish();
@@ -74,22 +100,6 @@ fn main() {
     eprintln!("samply load {out_path:?}");
 
     // thread_builder.add_sample(timestamp, frames, cpu_delta);
-}
-
-struct AggregationMap {
-    /// The byte offset at which aggregation started.
-    start_pos: u64,
-    /// Stores the accumulated bytes per stack.
-    map: HashMap<StackHandle, u64>,
-}
-
-impl AggregationMap {
-    pub fn new_with_start_pos(start_pos: u64) -> Self {
-        Self {
-            start_pos,
-            map: HashMap::new(),
-        }
-    }
 }
 
 struct State {
@@ -108,8 +118,14 @@ struct State {
     cat_number: CategoryHandle,
     cat_str: CategoryHandle,
     last_pos: u64,
-    aggregate_depth: usize,
-    aggregation_map: Option<AggregationMap>,
+    /// How many bytes, roughly, we should have consumed for each
+    /// emitted sample.
+    bytes_per_sample: u64,
+    /// Number of samples emitted so far.
+    sample_count: u64,
+    /// Stores the accumulated bytes per stack.
+    aggregation_map: IndexMap<StackHandle, u64>,
+    aggregation_start_pos: u64,
     array_depth: usize,
 }
 
@@ -120,7 +136,7 @@ enum Scope {
 }
 
 impl State {
-    pub fn new(name: &str, aggregate_depth: usize) -> Self {
+    pub fn new(name: &str, bytes_per_sample: u64) -> Self {
         let mut profile = Profile::new(
             name,
             ReferenceTimestamp::from_system_time(SystemTime::now()),
@@ -152,16 +168,19 @@ impl State {
             cat_number,
             cat_str,
             last_pos: 0,
-            aggregate_depth,
-            aggregation_map: None,
+            bytes_per_sample,
+            sample_count: 0,
+            aggregation_map: IndexMap::new(),
+            aggregation_start_pos: 0,
             array_depth: 0,
         }
     }
 
     fn advance(&mut self, pos: u64) {
-        if pos <= self.last_pos {
+        if pos == 0 && self.last_pos == 0 {
             return;
         }
+        assert!(pos > self.last_pos);
         let delta = pos - self.last_pos;
         let top_frame = self.profile.intern_frame(
             self.thread,
@@ -175,36 +194,31 @@ impl State {
         let stack_handle = self
             .profile
             .intern_stack(self.thread, parent_stack, top_frame);
-        if let Some(map) = &mut self.aggregation_map {
-            *map.map.entry(stack_handle).or_insert(0) += delta;
-        } else {
-            let start_timestamp = Timestamp::from_nanos_since_reference(self.last_pos * 1000);
-            let end_timestamp = Timestamp::from_nanos_since_reference(pos * 1000);
-            self.profile.add_sample(
-                self.thread,
-                start_timestamp,
-                Some(stack_handle),
-                CpuDelta::ZERO,
-                0,
-            );
-            let cpu_delta = CpuDelta::from_micros(delta);
-            let weight = delta as i32;
-            self.profile.add_sample(
-                self.thread,
-                end_timestamp,
-                Some(stack_handle),
-                cpu_delta,
-                weight,
-            );
-        }
+        *self.aggregation_map.entry(stack_handle).or_insert(0) += delta;
         self.last_pos = pos;
+        self.maybe_flush();
     }
 
-    fn consume_aggregation(&mut self) {
-        let AggregationMap { start_pos, map } = self.aggregation_map.take().unwrap();
-        let mut synth_last_pos = start_pos;
-        let mut synth_last_timestamp = Timestamp::from_nanos_since_reference(start_pos * 1000);
-        for (stack_handle, acc_delta) in map {
+    fn should_flush(&self) -> bool {
+        let aggregated_stack_count = self.aggregation_map.len() as u64;
+        if aggregated_stack_count <= 1 {
+            return false;
+        }
+        let sample_count_if_we_were_to_flush_now = self.sample_count + aggregated_stack_count;
+        let allowed_sample_count_at_current_pos = self.last_pos / self.bytes_per_sample;
+        sample_count_if_we_were_to_flush_now <= allowed_sample_count_at_current_pos
+    }
+
+    fn maybe_flush(&mut self) {
+        if self.should_flush() {
+            self.flush();
+        }
+    }
+
+    fn flush(&mut self) {
+        let mut synth_last_pos = self.aggregation_start_pos;
+        let mut synth_last_timestamp = Timestamp::from_nanos_since_reference(synth_last_pos * 1000);
+        for (&stack_handle, &acc_delta) in &self.aggregation_map {
             let synth_pos = synth_last_pos + acc_delta;
             self.profile.add_sample(
                 self.thread,
@@ -225,15 +239,15 @@ impl State {
             );
             synth_last_pos = synth_pos;
             synth_last_timestamp = synth_timestamp;
+            self.sample_count += 1; // we count these two samples as one
         }
         assert_eq!(self.last_pos, synth_last_pos);
+        self.aggregation_start_pos = self.last_pos;
+        self.aggregation_map.clear();
     }
 
     fn push_scope(&mut self, scope: Scope) {
         self.scope_stack.push(scope);
-        if self.scope_stack.len() == self.aggregate_depth {
-            self.aggregation_map = Some(AggregationMap::new_with_start_pos(self.last_pos));
-        }
         self.top_category = match scope {
             Scope::Object => self.cat_obj,
             Scope::Array => self.cat_arr,
@@ -241,9 +255,6 @@ impl State {
     }
 
     fn pop_scope(&mut self) {
-        if self.scope_stack.len() == self.aggregate_depth {
-            self.consume_aggregation();
-        }
         self.scope_stack.pop();
         if let Some(parent_scope) = self.scope_stack.last().cloned() {
             self.top_category = match parent_scope {
@@ -284,7 +295,8 @@ impl State {
         }
     }
 
-    pub fn finish(self) -> Profile {
+    pub fn finish(mut self) -> Profile {
+        self.flush();
         self.profile
     }
 }
@@ -296,8 +308,12 @@ impl JsonSessionObserver for State {
         Ok(())
     }
 
-    fn object_property(&mut self, pos: u64, property_name: String) -> Result<(), String> {
-        self.advance(pos);
+    fn object_property(
+        &mut self,
+        pos_at_prop_key_start: u64,
+        property_name: String,
+    ) -> Result<(), String> {
+        self.advance(pos_at_prop_key_start);
 
         let parent_string = self.string_stack.last().unwrap();
         let concat_string = format!("{parent_string}.{property_name}");
