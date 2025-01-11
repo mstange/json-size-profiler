@@ -54,7 +54,8 @@ impl<R: Read> Iterator for IoReadIterator<R> {
 }
 
 fn main() {
-    let file = File::open("/Users/mstange/Downloads/big-profile.json").unwrap();
+    let filename = std::env::args_os().nth(1).expect("Usage: cmd <FILENAME>");
+    let file = File::open(filename).unwrap();
     // let file =
     //     &br#"{"hello": 5, "what": null, "yo": [], "aha": ["yeah", 43, { "false": false } ]}"#[..];
     let bytes = IoReadIterator::new(file);
