@@ -2,6 +2,7 @@ use std::{
     collections::HashMap,
     fs::File,
     io::{BufWriter, Read},
+    path::PathBuf,
     time::SystemTime,
 };
 
@@ -54,8 +55,11 @@ impl<R: Read> Iterator for IoReadIterator<R> {
 }
 
 fn main() {
-    let filename = std::env::args_os().nth(1).expect("Usage: cmd <FILENAME>");
-    let file = File::open(filename).unwrap();
+    let path: PathBuf = std::env::args_os()
+        .nth(1)
+        .expect("Usage: cmd <FILENAME>")
+        .into();
+    let file = File::open(&path).unwrap();
     // let file =
     //     &br#"{"hello": 5, "what": null, "yo": [], "aha": ["yeah", 43, { "false": false } ]}"#[..];
     let bytes = IoReadIterator::new(file);
@@ -63,9 +67,14 @@ fn main() {
     let mut parser = parser::JsonSession::new(bytes, &mut state);
     parser.parse().unwrap();
     let profile = state.finish();
-    let out_file = File::create("json-bytes-profile.json").unwrap();
+
+    let filename = path.file_name().unwrap().to_string_lossy();
+    let out_path = path.with_file_name(format!("{}-size-profile.json", &filename));
+    let out_file = File::create(&out_path).unwrap();
     let writer = BufWriter::new(out_file);
     serde_json::to_writer(writer, &profile).unwrap();
+    eprintln!("JSON size profile saved to {out_path:?}");
+    eprintln!("samply load {out_path:?}");
 
     // thread_builder.add_sample(timestamp, frames, cpu_delta);
 }
