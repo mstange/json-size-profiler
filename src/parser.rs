@@ -575,7 +575,7 @@ impl<I: Iterator<Item = u8>> JsonTokenizer<I> {
             return self.err("Integer part must not be empty in number literal".to_string());
         }
 
-        if s.starts_with(&[b'0']) && s.len() > 1 {
+        if s.starts_with(b"0") && s.len() > 1 {
             return self
                 .err("Integer part of number must not start with 0 except for '0'".to_string());
         }
@@ -593,7 +593,7 @@ impl<I: Iterator<Item = u8>> JsonTokenizer<I> {
                 }
                 self.consume_no_skip().unwrap();
             }
-            if s.ends_with(&[b'.']) {
+            if s.ends_with(b".") {
                 return self.err("Fraction part of number must not be empty".to_string());
             }
         }
