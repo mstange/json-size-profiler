@@ -76,6 +76,22 @@ fn main() {
     // thread_builder.add_sample(timestamp, frames, cpu_delta);
 }
 
+struct AggregationMap {
+    /// The byte offset at which aggregation started.
+    start_pos: u64,
+    /// Stores the accumulated bytes per stack.
+    map: HashMap<StackHandle, u64>,
+}
+
+impl AggregationMap {
+    pub fn new_with_start_pos(start_pos: u64) -> Self {
+        Self {
+            start_pos,
+            map: HashMap::new(),
+        }
+    }
+}
+
 struct State {
     profile: Profile,
     thread: ThreadHandle,
@@ -93,7 +109,7 @@ struct State {
     cat_str: CategoryHandle,
     last_pos: u64,
     aggregate_depth: usize,
-    aggregation_map: Option<(u64, HashMap<StackHandle, u64>)>,
+    aggregation_map: Option<AggregationMap>,
     array_depth: usize,
 }
 
@@ -159,8 +175,8 @@ impl State {
         let stack_handle = self
             .profile
             .intern_stack(self.thread, parent_stack, top_frame);
-        if let Some((_, map)) = &mut self.aggregation_map {
-            *map.entry(stack_handle).or_insert(0) += delta;
+        if let Some(map) = &mut self.aggregation_map {
+            *map.map.entry(stack_handle).or_insert(0) += delta;
         } else {
             let start_timestamp = Timestamp::from_nanos_since_reference(self.last_pos * 1000);
             let end_timestamp = Timestamp::from_nanos_since_reference(pos * 1000);
@@ -185,7 +201,7 @@ impl State {
     }
 
     fn consume_aggregation(&mut self) {
-        let (start_pos, map) = self.aggregation_map.take().unwrap();
+        let AggregationMap { start_pos, map } = self.aggregation_map.take().unwrap();
         let mut synth_last_pos = start_pos;
         let mut synth_last_timestamp = Timestamp::from_nanos_since_reference(start_pos * 1000);
         for (stack_handle, acc_delta) in map {
@@ -216,7 +232,7 @@ impl State {
     fn push_scope(&mut self, scope: Scope) {
         self.scope_stack.push(scope);
         if self.scope_stack.len() == self.aggregate_depth {
-            self.aggregation_map = Some((self.last_pos, HashMap::new()));
+            self.aggregation_map = Some(AggregationMap::new_with_start_pos(self.last_pos));
         }
         self.top_category = match scope {
             Scope::Object => self.cat_obj,
