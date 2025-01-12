@@ -11,7 +11,7 @@ use fxprof_processed_profile::{
     ReferenceTimestamp, SamplingInterval, StackHandle, StringHandle, ThreadHandle, Timestamp,
 };
 use indexmap::IndexMap;
-use tinyjson_session::{JsonPrimitiveValue, JsonSession, JsonSessionObserver};
+use tinyjson_session::{JsonPrimitiveValue, JsonSession, JsonSessionEvent};
 
 struct IoReadIterator<R> {
     reader: R,
@@ -86,9 +86,35 @@ fn main() {
     // let file =
     //     &br#"{"hello": 5, "what": null, "yo": [], "aha": ["yeah", 43, { "false": false } ]}"#[..];
     let bytes = IoReadIterator::new(file);
+    let mut session = JsonSession::new(bytes);
     let mut state = State::new("JSON", bytes_per_sample);
-    let mut parser = JsonSession::new(bytes, &mut state);
-    parser.parse().unwrap();
+
+    while let Some(event) = session.next().unwrap() {
+        match event {
+            JsonSessionEvent::BeginObject { pos_at_obj_start } => {
+                state.begin_object(pos_at_obj_start)
+            }
+            JsonSessionEvent::ObjectProperty {
+                property_key,
+                pos_at_prop_key_start,
+            } => state.object_property(pos_at_prop_key_start, property_key),
+            JsonSessionEvent::EndObject { pos_after_obj_end } => {
+                state.end_object(pos_after_obj_end)
+            }
+            JsonSessionEvent::BeginArray { pos_at_array_start } => {
+                state.begin_array(pos_at_array_start)
+            }
+            JsonSessionEvent::EndArray {
+                pos_after_array_end,
+            } => state.end_array(pos_after_array_end),
+            JsonSessionEvent::PrimitiveValue {
+                value,
+                pos_before,
+                pos_after,
+            } => state.primitive_value(pos_before, pos_after, value),
+        }
+    }
+
     let profile = state.finish();
 
     let filename = path.file_name().unwrap().to_string_lossy();
@@ -299,39 +325,29 @@ impl State {
         self.flush();
         self.profile
     }
-}
 
-impl JsonSessionObserver for State {
-    fn begin_object(&mut self, pos_at_obj_start: u64) -> Result<(), String> {
+    fn begin_object(&mut self, pos_at_obj_start: u64) {
         self.advance(pos_at_obj_start);
         self.push_scope(Scope::Object);
-        Ok(())
     }
 
-    fn object_property(
-        &mut self,
-        pos_at_prop_key_start: u64,
-        property_name: String,
-    ) -> Result<(), String> {
+    fn object_property(&mut self, pos_at_prop_key_start: u64, property_key: String) {
         self.advance(pos_at_prop_key_start);
 
         let parent_string = self.string_stack.last().unwrap();
-        let concat_string = format!("{parent_string}.{property_name}");
+        let concat_string = format!("{parent_string}.{property_key}");
         let label = self.profile.intern_string(&concat_string);
         self.string_stack.push(concat_string);
         self.push_label(label, self.cat_obj);
-
-        Ok(())
     }
 
-    fn end_object(&mut self, pos_after_obj_end: u64) -> Result<(), String> {
+    fn end_object(&mut self, pos_after_obj_end: u64) {
         self.advance(pos_after_obj_end);
         self.pop_scope();
         self.maybe_end_property();
-        Ok(())
     }
 
-    fn begin_array(&mut self, pos_at_array_start: u64) -> Result<(), String> {
+    fn begin_array(&mut self, pos_at_array_start: u64) {
         self.advance(pos_at_array_start);
 
         self.push_scope(Scope::Array);
@@ -342,25 +358,17 @@ impl JsonSessionObserver for State {
         let concat_string = format!("{parent_string}[{indexer}]");
         self.string_stack.push(concat_string);
         self.array_depth += 1;
-
-        Ok(())
     }
 
-    fn end_array(&mut self, pos_after_array_end: u64) -> Result<(), String> {
+    fn end_array(&mut self, pos_after_array_end: u64) {
         self.advance(pos_after_array_end);
         self.string_stack.pop();
         self.array_depth -= 1;
         self.pop_scope();
         self.maybe_end_property();
-        Ok(())
     }
 
-    fn primitive_value(
-        &mut self,
-        pos_before: u64,
-        pos_after: u64,
-        value: JsonPrimitiveValue,
-    ) -> Result<(), String> {
+    fn primitive_value(&mut self, pos_before: u64, pos_after: u64, value: JsonPrimitiveValue) {
         self.advance(pos_before);
 
         let category = match value {
@@ -375,7 +383,5 @@ impl JsonSessionObserver for State {
         self.top_category = prev_category;
 
         self.maybe_end_property();
-
-        Ok(())
     }
 }
