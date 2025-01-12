@@ -150,7 +150,7 @@ struct State {
     /// Number of samples emitted so far.
     sample_count: u64,
     /// Stores the accumulated bytes per stack.
-    aggregation_map: IndexMap<StackHandle, u64>,
+    aggregation_map: IndexMap<StackHandle, u64, rustc_hash::FxBuildHasher>,
     aggregation_start_pos: u64,
     array_depth: usize,
 }
@@ -196,7 +196,7 @@ impl State {
             last_pos: 0,
             bytes_per_sample,
             sample_count: 0,
-            aggregation_map: IndexMap::new(),
+            aggregation_map: IndexMap::with_hasher(rustc_hash::FxBuildHasher),
             aggregation_start_pos: 0,
             array_depth: 0,
         }
