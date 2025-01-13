@@ -154,12 +154,33 @@ enum StackEntry {
     },
 }
 
-struct State {
-    profile: Profile,
-    thread: ThreadHandle,
-    root_path: DefaultSymbol,
-    stack: Vec<StackEntry>,
-    top_stack_handle: Option<StackHandle>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum JsonPiece {
+    Object,
+    Array,
+    Null,
+    Bool,
+    Number,
+    String,
+    ProperyKey,
+}
+
+impl JsonPiece {
+    pub fn description(&self) -> &'static str {
+        match self {
+            JsonPiece::Object => "object",
+            JsonPiece::Array => "array",
+            JsonPiece::Null => "null",
+            JsonPiece::Bool => "bool",
+            JsonPiece::Number => "number",
+            JsonPiece::String => "string",
+            JsonPiece::ProperyKey => "propery tey",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct JsonPieceCategories {
     c_obj: CategoryHandle,
     c_arr: CategoryHandle,
     c_null: CategoryHandle,
@@ -167,6 +188,41 @@ struct State {
     c_number: CategoryHandle,
     c_str: CategoryHandle,
     c_property_key: CategoryHandle,
+}
+
+impl JsonPieceCategories {
+    pub fn new(profile: &mut Profile) -> Self {
+        Self {
+            c_obj: profile.add_category("Object", CategoryColor::Gray),
+            c_arr: profile.add_category("Array", CategoryColor::Gray),
+            c_null: profile.add_category("Null", CategoryColor::Yellow),
+            c_bool: profile.add_category("Bool", CategoryColor::Brown),
+            c_number: profile.add_category("Number", CategoryColor::Green),
+            c_str: profile.add_category("String", CategoryColor::Blue),
+            c_property_key: profile.add_category("Property Key", CategoryColor::LightBlue),
+        }
+    }
+
+    pub fn get(&self, piece: JsonPiece) -> CategoryHandle {
+        match piece {
+            JsonPiece::Object => self.c_obj,
+            JsonPiece::Array => self.c_arr,
+            JsonPiece::Null => self.c_null,
+            JsonPiece::Bool => self.c_bool,
+            JsonPiece::Number => self.c_number,
+            JsonPiece::String => self.c_str,
+            JsonPiece::ProperyKey => self.c_property_key,
+        }
+    }
+}
+
+struct State {
+    profile: Profile,
+    thread: ThreadHandle,
+    root_path: DefaultSymbol,
+    stack: Vec<StackEntry>,
+    top_stack_handle: Option<StackHandle>,
+    categories: JsonPieceCategories,
     last_pos: u64,
     /// How many bytes, roughly, we should have consumed for each
     /// emitted sample.
@@ -179,7 +235,7 @@ struct State {
     string_interner: DefaultStringInterner,
     cached_property_paths: FxHashMap<(DefaultSymbol, DefaultSymbol), DefaultSymbol>,
     cached_indexer_paths: FxHashMap<(DefaultSymbol, usize), DefaultSymbol>,
-    node_cache: FxHashMap<(Option<StackHandle>, DefaultSymbol, CategoryHandle), StackHandle>,
+    node_cache: FxHashMap<(Option<StackHandle>, DefaultSymbol, JsonPiece), StackHandle>,
 }
 
 impl State {
@@ -192,13 +248,7 @@ impl State {
         let process = profile.add_process("Bytes", 0, Timestamp::from_nanos_since_reference(0));
         let thread = profile.add_thread(process, 0, Timestamp::from_nanos_since_reference(0), true);
 
-        let c_obj = profile.add_category("Object", CategoryColor::Gray);
-        let c_arr = profile.add_category("Array", CategoryColor::Gray);
-        let c_null = profile.add_category("Null", CategoryColor::Yellow);
-        let c_bool = profile.add_category("Bool", CategoryColor::Brown);
-        let c_number = profile.add_category("Number", CategoryColor::Green);
-        let c_str = profile.add_category("String", CategoryColor::Blue);
-        let c_property_key = profile.add_category("Property Key", CategoryColor::LightBlue);
+        let categories = JsonPieceCategories::new(&mut profile);
 
         let mut string_interner = DefaultStringInterner::new();
         let root_path = string_interner.get_or_intern("json");
@@ -208,13 +258,7 @@ impl State {
             thread,
             root_path,
             stack: Vec::new(),
-            c_obj,
-            c_arr,
-            c_null,
-            c_bool,
-            c_number,
-            c_str,
-            c_property_key,
+            categories,
             top_stack_handle: None,
             last_pos: 0,
             bytes_per_sample,
@@ -292,6 +336,36 @@ impl State {
         self.profile
     }
 
+    fn get_stack(
+        &mut self,
+        parent_stack: Option<StackHandle>,
+        path: DefaultSymbol,
+        piece: JsonPiece,
+    ) -> StackHandle {
+        let key = (parent_stack, path, piece);
+        if let Some(s) = self.node_cache.get(&key) {
+            return *s;
+        }
+
+        let label = self.profile.intern_string(&format!(
+            "{} ({})",
+            self.string_interner.resolve(path).unwrap(),
+            piece.description()
+        ));
+        let category = self.categories.get(piece);
+        let frame_info = FrameInfo {
+            frame: Frame::Label(label),
+            category_pair: category.into(),
+            flags: FrameFlags::empty(),
+        };
+        let frame_handle = self.profile.intern_frame(self.thread, frame_info);
+        let stack_handle = self
+            .profile
+            .intern_stack(self.thread, parent_stack, frame_handle);
+        self.node_cache.insert(key, stack_handle);
+        stack_handle
+    }
+
     fn begin_object(&mut self, pos_at_obj_start: u64) {
         self.advance(pos_at_obj_start);
 
@@ -314,26 +388,7 @@ impl State {
             }) => (Some(*stack_handle), *path_for_array_elems, *array_depth),
             None => (None, self.root_path, 0),
         };
-        let key = (parent_stack, path, self.c_obj);
-        let stack_handle = if let Some(s) = self.node_cache.get(&key) {
-            *s
-        } else {
-            let label = self.profile.intern_string(&format!(
-                "{} (object)",
-                self.string_interner.resolve(path).unwrap()
-            ));
-            let frame_info = FrameInfo {
-                frame: Frame::Label(label),
-                category_pair: self.c_obj.into(),
-                flags: FrameFlags::empty(),
-            };
-            let frame_handle = self.profile.intern_frame(self.thread, frame_info);
-            let stack_handle = self
-                .profile
-                .intern_stack(self.thread, parent_stack, frame_handle);
-            self.node_cache.insert(key, stack_handle);
-            stack_handle
-        };
+        let stack_handle = self.get_stack(parent_stack, path, JsonPiece::Object);
         self.top_stack_handle = Some(stack_handle);
         self.stack.push(StackEntry::Object {
             stack_handle,
@@ -372,27 +427,8 @@ impl State {
             property_path
         };
 
-        let cache_key = (Some(obj_stack), property_path, self.c_property_key);
-        let stack_handle = if let Some(s) = self.node_cache.get(&cache_key) {
-            *s
-        } else {
-            let label = self.profile.intern_string(&format!(
-                "{} (property key)",
-                self.string_interner.resolve(property_path).unwrap()
-            ));
-            let frame_info = FrameInfo {
-                frame: Frame::Label(label),
-                category_pair: self.c_property_key.into(),
-                flags: FrameFlags::empty(),
-            };
-            let frame_handle = self.profile.intern_frame(self.thread, frame_info);
-            let stack_handle =
-                self.profile
-                    .intern_stack(self.thread, Some(obj_stack), frame_handle);
-            self.node_cache.insert(cache_key, stack_handle);
-            stack_handle
-        };
         *path_for_current_prop_value = Some(property_path);
+        let stack_handle = self.get_stack(Some(obj_stack), property_path, JsonPiece::ProperyKey);
         self.top_stack_handle = Some(stack_handle);
     }
 
@@ -431,27 +467,6 @@ impl State {
             None => (None, self.root_path, 0),
         };
 
-        let cache_key = (parent_stack, path, self.c_arr);
-        let stack_handle = if let Some(s) = self.node_cache.get(&cache_key) {
-            *s
-        } else {
-            let label = self.profile.intern_string(&format!(
-                "{} (array)",
-                self.string_interner.resolve(path).unwrap()
-            ));
-            let frame_info = FrameInfo {
-                frame: Frame::Label(label),
-                category_pair: self.c_arr.into(),
-                flags: FrameFlags::empty(),
-            };
-            let frame_handle = self.profile.intern_frame(self.thread, frame_info);
-            let stack_handle = self
-                .profile
-                .intern_stack(self.thread, parent_stack, frame_handle);
-            self.node_cache.insert(cache_key, stack_handle);
-            stack_handle
-        };
-
         let cache_key = (path, array_depth);
         let path_for_array_elems = if let Some(s) = self.cached_indexer_paths.get(&cache_key) {
             *s
@@ -466,6 +481,7 @@ impl State {
             path_for_array_elems
         };
 
+        let stack_handle = self.get_stack(parent_stack, path, JsonPiece::Array);
         self.top_stack_handle = Some(stack_handle);
         self.stack.push(StackEntry::Array {
             stack_handle,
@@ -502,31 +518,15 @@ impl State {
             }) => (Some(*stack_handle), *path_for_array_elems),
             None => (None, self.root_path),
         };
-        let (category, s) = match value {
-            JsonPrimitiveValue::Number(_) => (self.c_number, "number"),
-            JsonPrimitiveValue::Boolean(_) => (self.c_bool, "bool"),
-            JsonPrimitiveValue::String(_) => (self.c_str, "string"),
-            JsonPrimitiveValue::Null => (self.c_null, "null"),
+
+        let piece = match value {
+            JsonPrimitiveValue::Number(_) => JsonPiece::Number,
+            JsonPrimitiveValue::Boolean(_) => JsonPiece::Bool,
+            JsonPrimitiveValue::String(_) => JsonPiece::String,
+            JsonPrimitiveValue::Null => JsonPiece::Null,
         };
 
-        let cache_key = (parent_stack, path, category);
-        let stack_handle = if let Some(s) = self.node_cache.get(&cache_key) {
-            *s
-        } else {
-            let label = self.profile.intern_string(&format!(
-                "{} ({s})",
-                self.string_interner.resolve(path).unwrap()
-            ));
-            let frame_info = FrameInfo {
-                frame: Frame::Label(label),
-                category_pair: category.into(),
-                flags: FrameFlags::empty(),
-            };
-            let frame = self.profile.intern_frame(self.thread, frame_info);
-            let stack_handle = self.profile.intern_stack(self.thread, parent_stack, frame);
-            self.node_cache.insert(cache_key, stack_handle);
-            stack_handle
-        };
+        let stack_handle = self.get_stack(parent_stack, path, piece);
         self.top_stack_handle = Some(stack_handle);
 
         self.advance(pos_after);
