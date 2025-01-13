@@ -1,7 +1,6 @@
 use std::{
     fs::File,
     io::{BufWriter, Read},
-    os::unix::fs::MetadataExt,
     path::PathBuf,
     time::SystemTime,
 };
@@ -60,7 +59,18 @@ fn main() {
         .expect("Usage: cmd <FILENAME>")
         .into();
     let file = File::open(&path).unwrap();
-    let size = file.metadata().unwrap().size();
+
+    #[cfg(unix)]
+    let size = {
+        use std::os::unix::fs::MetadataExt;
+        file.metadata().unwrap().size()
+    };
+
+    #[cfg(windows)]
+    let size = {
+        use std::os::windows::fs::MetadataExt;
+        file.metadata().unwrap().file_size()
+    };
 
     // How often should we flush aggregated samples? Depends on the size.
     // If I want to limit to 100 samples, and I have 1000 bytes to parse,
