@@ -140,20 +140,6 @@ fn main() {
     // thread_builder.add_sample(timestamp, frames, cpu_delta);
 }
 
-enum StackEntry {
-    Object {
-        path: DefaultSymbol,                                // "json.counters[i].samples"
-        stack_handle: StackHandle,                          // json.counters[i].samples (object)
-        path_for_current_prop_value: Option<DefaultSymbol>, // "json.counters[i].samples.length"
-        array_depth: usize,
-    },
-    Array {
-        stack_handle: StackHandle,           // json.counters (array)
-        path_for_array_elems: DefaultSymbol, // "json.counters[i]"
-        array_depth: usize,
-    },
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum JsonPiece {
     Object,
@@ -216,11 +202,31 @@ impl JsonPieceCategories {
     }
 }
 
+enum Scope {
+    Object {
+        path: DefaultSymbol,                                // "json.counters[i].samples"
+        stack_handle: StackHandle,                          // json.counters[i].samples (object)
+        path_for_current_prop_value: Option<DefaultSymbol>, // "json.counters[i].samples.length"
+        array_depth: usize,
+    },
+    Array {
+        stack_handle: StackHandle,           // json.counters (array)
+        path_for_array_elems: DefaultSymbol, // "json.counters[i]"
+        array_depth: usize,
+    },
+}
+
+struct ScopeInfo {
+    stack_handle: Option<StackHandle>,
+    path: DefaultSymbol,
+    array_depth: usize,
+}
+
 struct State {
     profile: Profile,
     thread: ThreadHandle,
     root_path: DefaultSymbol,
-    stack: Vec<StackEntry>,
+    scope_stack: Vec<Scope>,
     top_stack_handle: Option<StackHandle>,
     categories: JsonPieceCategories,
     last_pos: u64,
@@ -257,7 +263,7 @@ impl State {
             profile,
             thread,
             root_path,
-            stack: Vec::new(),
+            scope_stack: Vec::new(),
             categories,
             top_stack_handle: None,
             last_pos: 0,
@@ -336,20 +342,15 @@ impl State {
         self.profile
     }
 
-    fn get_stack(
-        &mut self,
-        parent_stack: Option<StackHandle>,
-        path: DefaultSymbol,
-        piece: JsonPiece,
-    ) -> StackHandle {
-        let key = (parent_stack, path, piece);
+    fn get_stack(&mut self, parent_scope: &ScopeInfo, piece: JsonPiece) -> StackHandle {
+        let key = (parent_scope.stack_handle, parent_scope.path, piece);
         if let Some(s) = self.node_cache.get(&key) {
             return *s;
         }
 
         let label = self.profile.intern_string(&format!(
             "{} ({})",
-            self.string_interner.resolve(path).unwrap(),
+            self.string_interner.resolve(parent_scope.path).unwrap(),
             piece.description()
         ));
         let category = self.categories.get(piece);
@@ -359,67 +360,95 @@ impl State {
             flags: FrameFlags::empty(),
         };
         let frame_handle = self.profile.intern_frame(self.thread, frame_info);
-        let stack_handle = self
-            .profile
-            .intern_stack(self.thread, parent_stack, frame_handle);
+        let stack_handle =
+            self.profile
+                .intern_stack(self.thread, parent_scope.stack_handle, frame_handle);
         self.node_cache.insert(key, stack_handle);
         stack_handle
+    }
+
+    fn exit_scope(&mut self) {
+        self.scope_stack.pop();
+
+        self.top_stack_handle = match self.scope_stack.last() {
+            Some(Scope::Object { stack_handle, .. }) => Some(*stack_handle),
+            Some(Scope::Array { stack_handle, .. }) => Some(*stack_handle),
+            None => None,
+        };
+    }
+
+    fn current_scope(&self) -> ScopeInfo {
+        match self.scope_stack.last() {
+            Some(Scope::Object {
+                stack_handle,
+                path_for_current_prop_value,
+                array_depth,
+                ..
+            }) => ScopeInfo {
+                stack_handle: Some(*stack_handle),
+                path: path_for_current_prop_value.unwrap(),
+                array_depth: *array_depth,
+            },
+            Some(Scope::Array {
+                stack_handle,
+                path_for_array_elems,
+                array_depth,
+                ..
+            }) => ScopeInfo {
+                stack_handle: Some(*stack_handle),
+                path: *path_for_array_elems,
+                array_depth: *array_depth,
+            },
+            None => ScopeInfo {
+                stack_handle: None,
+                path: self.root_path,
+                array_depth: 0,
+            },
+        }
     }
 
     fn begin_object(&mut self, pos_at_obj_start: u64) {
         self.advance(pos_at_obj_start);
 
-        let (parent_stack, path, array_depth) = match self.stack.last() {
-            Some(StackEntry::Object {
-                stack_handle,
-                path_for_current_prop_value,
-                array_depth,
-                ..
-            }) => (
-                Some(*stack_handle),
-                path_for_current_prop_value.unwrap(),
-                *array_depth,
-            ),
-            Some(StackEntry::Array {
-                stack_handle,
-                path_for_array_elems,
-                array_depth,
-                ..
-            }) => (Some(*stack_handle), *path_for_array_elems, *array_depth),
-            None => (None, self.root_path, 0),
-        };
-        let stack_handle = self.get_stack(parent_stack, path, JsonPiece::Object);
-        self.top_stack_handle = Some(stack_handle);
-        self.stack.push(StackEntry::Object {
+        let parent_scope = self.current_scope();
+        let stack_handle = self.get_stack(&parent_scope, JsonPiece::Object);
+        self.scope_stack.push(Scope::Object {
             stack_handle,
-            path,
+            path: parent_scope.path,
             path_for_current_prop_value: None,
-            array_depth,
+            array_depth: parent_scope.array_depth,
         });
+        self.top_stack_handle = Some(stack_handle);
     }
 
     fn object_property(&mut self, pos_at_prop_key_start: u64, property_key: String) {
         self.advance(pos_at_prop_key_start);
 
         let property_key = self.string_interner.get_or_intern(&property_key);
-        let (obj_stack, obj_path, path_for_current_prop_value) =
-            match self.stack.last_mut().unwrap() {
-                StackEntry::Object {
-                    stack_handle,
-                    path,
-                    path_for_current_prop_value,
-                    ..
-                } => (*stack_handle, *path, path_for_current_prop_value),
-                _ => panic!(),
-            };
+        let (obj_scope, path_for_current_prop_value) = match self.scope_stack.last_mut().unwrap() {
+            Scope::Object {
+                stack_handle,
+                path,
+                path_for_current_prop_value,
+                array_depth,
+            } => (
+                ScopeInfo {
+                    stack_handle: Some(*stack_handle),
+                    path: *path,
+                    array_depth: *array_depth,
+                },
+                path_for_current_prop_value,
+            ),
+            _ => panic!(),
+        };
 
-        let cache_key = (obj_path, property_key);
+        let cache_key = (obj_scope.path, property_key);
         let property_path = if let Some(s) = self.cached_property_paths.get(&cache_key) {
             *s
         } else {
             let property_path = format!(
                 "{}.{}",
-                self.string_interner.resolve(obj_path).unwrap(),
+                self.string_interner.resolve(obj_scope.path).unwrap(),
                 self.string_interner.resolve(property_key).unwrap()
             );
             let property_path = self.string_interner.get_or_intern(&property_path);
@@ -428,96 +457,55 @@ impl State {
         };
 
         *path_for_current_prop_value = Some(property_path);
-        let stack_handle = self.get_stack(Some(obj_stack), property_path, JsonPiece::ProperyKey);
+        let stack_handle = self.get_stack(&obj_scope, JsonPiece::ProperyKey);
         self.top_stack_handle = Some(stack_handle);
     }
 
     fn end_object(&mut self, pos_after_obj_end: u64) {
         self.advance(pos_after_obj_end);
 
-        self.stack.pop();
-
-        self.top_stack_handle = match self.stack.last() {
-            Some(StackEntry::Object { stack_handle, .. }) => Some(*stack_handle),
-            Some(StackEntry::Array { stack_handle, .. }) => Some(*stack_handle),
-            None => None,
-        };
+        self.exit_scope();
     }
 
     fn begin_array(&mut self, pos_at_array_start: u64) {
         self.advance(pos_at_array_start);
 
-        let (parent_stack, path, array_depth) = match self.stack.last() {
-            Some(StackEntry::Object {
-                stack_handle,
-                path_for_current_prop_value,
-                array_depth,
-                ..
-            }) => (
-                Some(*stack_handle),
-                path_for_current_prop_value.unwrap(),
-                *array_depth,
-            ),
-            Some(StackEntry::Array {
-                stack_handle,
-                path_for_array_elems,
-                array_depth,
-                ..
-            }) => (Some(*stack_handle), *path_for_array_elems, *array_depth),
-            None => (None, self.root_path, 0),
-        };
-
-        let cache_key = (path, array_depth);
+        let parent_scope = self.current_scope();
+        let cache_key = (parent_scope.path, parent_scope.array_depth);
         let path_for_array_elems = if let Some(s) = self.cached_indexer_paths.get(&cache_key) {
             *s
         } else {
             const INDEXER_CHARS: &str = "ijklmnopqrstuvwxyz";
-            let indexer = &INDEXER_CHARS[(array_depth % INDEXER_CHARS.len())..][..1];
-            let path_for_array_elems =
-                format!("{}[{indexer}]", self.string_interner.resolve(path).unwrap());
+            let indexer = &INDEXER_CHARS[(parent_scope.array_depth % INDEXER_CHARS.len())..][..1];
+            let path_for_array_elems = format!(
+                "{}[{indexer}]",
+                self.string_interner.resolve(parent_scope.path).unwrap()
+            );
             let path_for_array_elems = self.string_interner.get_or_intern(&path_for_array_elems);
             self.cached_indexer_paths
                 .insert(cache_key, path_for_array_elems);
             path_for_array_elems
         };
 
-        let stack_handle = self.get_stack(parent_stack, path, JsonPiece::Array);
+        let stack_handle = self.get_stack(&parent_scope, JsonPiece::Array);
         self.top_stack_handle = Some(stack_handle);
-        self.stack.push(StackEntry::Array {
+        self.scope_stack.push(Scope::Array {
             stack_handle,
             path_for_array_elems,
-            array_depth: array_depth + 1,
+            array_depth: parent_scope.array_depth + 1,
         });
     }
 
     fn end_array(&mut self, pos_after_array_end: u64) {
         self.advance(pos_after_array_end);
 
-        self.stack.pop();
-
-        self.top_stack_handle = match self.stack.last() {
-            Some(StackEntry::Object { stack_handle, .. }) => Some(*stack_handle),
-            Some(StackEntry::Array { stack_handle, .. }) => Some(*stack_handle),
-            None => None,
-        };
+        self.exit_scope();
     }
 
     fn primitive_value(&mut self, pos_before: u64, pos_after: u64, value: JsonPrimitiveValue) {
         self.advance(pos_before);
 
-        let (parent_stack, path) = match self.stack.last() {
-            Some(StackEntry::Object {
-                stack_handle,
-                path_for_current_prop_value,
-                ..
-            }) => (Some(*stack_handle), path_for_current_prop_value.unwrap()),
-            Some(StackEntry::Array {
-                stack_handle,
-                path_for_array_elems,
-                ..
-            }) => (Some(*stack_handle), *path_for_array_elems),
-            None => (None, self.root_path),
-        };
+        let scope = self.current_scope();
 
         let piece = match value {
             JsonPrimitiveValue::Number(_) => JsonPiece::Number,
@@ -526,10 +514,10 @@ impl State {
             JsonPrimitiveValue::Null => JsonPiece::Null,
         };
 
-        let stack_handle = self.get_stack(parent_stack, path, piece);
+        let stack_handle = self.get_stack(&scope, piece);
         self.top_stack_handle = Some(stack_handle);
 
         self.advance(pos_after);
-        self.top_stack_handle = parent_stack;
+        self.top_stack_handle = scope.stack_handle;
     }
 }
