@@ -8,9 +8,11 @@ use std::{
 
 use fxprof_processed_profile::{
     CategoryColor, CategoryHandle, CpuDelta, Frame, FrameFlags, FrameInfo, Profile,
-    ReferenceTimestamp, SamplingInterval, StackHandle, StringHandle, ThreadHandle, Timestamp,
+    ReferenceTimestamp, SamplingInterval, StackHandle, ThreadHandle, Timestamp,
 };
 use indexmap::IndexMap;
+use rustc_hash::{FxBuildHasher, FxHashMap};
+use string_interner::{DefaultStringInterner, DefaultSymbol};
 use tinyjson_session::{JsonPrimitiveValue, JsonSession, JsonSessionEvent};
 
 struct IoReadIterator<R> {
@@ -128,21 +130,33 @@ fn main() {
     // thread_builder.add_sample(timestamp, frames, cpu_delta);
 }
 
+enum StackEntry {
+    Object {
+        path: DefaultSymbol,                                // "json.counters[i].samples"
+        stack_handle: StackHandle,                          // json.counters[i].samples (object)
+        path_for_current_prop_value: Option<DefaultSymbol>, // "json.counters[i].samples.length"
+        array_depth: usize,
+    },
+    Array {
+        stack_handle: StackHandle,           // json.counters (array)
+        path_for_array_elems: DefaultSymbol, // "json.counters[i]"
+        array_depth: usize,
+    },
+}
+
 struct State {
     profile: Profile,
     thread: ThreadHandle,
-    stack: Vec<StackHandle>,
-    stack_labels: Vec<(StringHandle, CategoryHandle)>,
-    top_label: StringHandle,
-    top_category: CategoryHandle,
-    string_stack: Vec<String>,
-    scope_stack: Vec<Scope>,
-    cat_obj: CategoryHandle,
-    cat_arr: CategoryHandle,
-    cat_null: CategoryHandle,
-    cat_bool: CategoryHandle,
-    cat_number: CategoryHandle,
-    cat_str: CategoryHandle,
+    root_path: DefaultSymbol,
+    stack: Vec<StackEntry>,
+    top_stack_handle: Option<StackHandle>,
+    c_obj: CategoryHandle,
+    c_arr: CategoryHandle,
+    c_null: CategoryHandle,
+    c_bool: CategoryHandle,
+    c_number: CategoryHandle,
+    c_str: CategoryHandle,
+    c_property_key: CategoryHandle,
     last_pos: u64,
     /// How many bytes, roughly, we should have consumed for each
     /// emitted sample.
@@ -150,15 +164,12 @@ struct State {
     /// Number of samples emitted so far.
     sample_count: u64,
     /// Stores the accumulated bytes per stack.
-    aggregation_map: IndexMap<StackHandle, u64, rustc_hash::FxBuildHasher>,
+    aggregation_map: IndexMap<StackHandle, u64, FxBuildHasher>,
     aggregation_start_pos: u64,
-    array_depth: usize,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Scope {
-    Object,
-    Array,
+    string_interner: DefaultStringInterner,
+    cached_property_paths: FxHashMap<(DefaultSymbol, DefaultSymbol), DefaultSymbol>,
+    cached_indexer_paths: FxHashMap<(DefaultSymbol, usize), DefaultSymbol>,
+    node_cache: FxHashMap<(Option<StackHandle>, DefaultSymbol, CategoryHandle), StackHandle>,
 }
 
 impl State {
@@ -170,35 +181,40 @@ impl State {
         );
         let process = profile.add_process("Bytes", 0, Timestamp::from_nanos_since_reference(0));
         let thread = profile.add_thread(process, 0, Timestamp::from_nanos_since_reference(0), true);
-        let cat_obj = profile.add_category("Object", CategoryColor::Gray);
-        let cat_arr = profile.add_category("Array", CategoryColor::Gray);
-        let cat_null = profile.add_category("Null", CategoryColor::Yellow);
-        let cat_bool = profile.add_category("Bool", CategoryColor::Blue);
-        let cat_number = profile.add_category("Number", CategoryColor::LightBlue);
-        let cat_str = profile.add_category("String", CategoryColor::Green);
-        let top_label = profile.intern_string("json");
-        let top_category = cat_obj;
+
+        let c_obj = profile.add_category("Object", CategoryColor::Gray);
+        let c_arr = profile.add_category("Array", CategoryColor::Gray);
+        let c_null = profile.add_category("Null", CategoryColor::Yellow);
+        let c_bool = profile.add_category("Bool", CategoryColor::Brown);
+        let c_number = profile.add_category("Number", CategoryColor::Green);
+        let c_str = profile.add_category("String", CategoryColor::Blue);
+        let c_property_key = profile.add_category("Property Key", CategoryColor::LightBlue);
+
+        let mut string_interner = DefaultStringInterner::new();
+        let root_path = string_interner.get_or_intern("json");
+
         Self {
             profile,
             thread,
+            root_path,
             stack: Vec::new(),
-            stack_labels: Vec::new(),
-            top_label,
-            top_category,
-            string_stack: vec!["json".into()],
-            scope_stack: Vec::new(),
-            cat_obj,
-            cat_arr,
-            cat_null,
-            cat_bool,
-            cat_number,
-            cat_str,
+            c_obj,
+            c_arr,
+            c_null,
+            c_bool,
+            c_number,
+            c_str,
+            c_property_key,
+            top_stack_handle: None,
             last_pos: 0,
             bytes_per_sample,
             sample_count: 0,
             aggregation_map: IndexMap::with_hasher(rustc_hash::FxBuildHasher),
             aggregation_start_pos: 0,
-            array_depth: 0,
+            string_interner,
+            cached_property_paths: FxHashMap::default(),
+            cached_indexer_paths: FxHashMap::default(),
+            node_cache: FxHashMap::default(),
         }
     }
 
@@ -208,18 +224,7 @@ impl State {
         }
         assert!(pos > self.last_pos);
         let delta = pos - self.last_pos;
-        let top_frame = self.profile.intern_frame(
-            self.thread,
-            FrameInfo {
-                frame: Frame::Label(self.top_label),
-                category_pair: self.top_category.into(),
-                flags: FrameFlags::empty(),
-            },
-        );
-        let parent_stack = self.stack.last().cloned();
-        let stack_handle = self
-            .profile
-            .intern_stack(self.thread, parent_stack, top_frame);
+        let stack_handle = self.top_stack_handle.unwrap();
         *self.aggregation_map.entry(stack_handle).or_insert(0) += delta;
         self.last_pos = pos;
         self.maybe_flush();
@@ -272,55 +277,6 @@ impl State {
         self.aggregation_map.clear();
     }
 
-    fn push_scope(&mut self, scope: Scope) {
-        self.scope_stack.push(scope);
-        self.top_category = match scope {
-            Scope::Object => self.cat_obj,
-            Scope::Array => self.cat_arr,
-        };
-    }
-
-    fn pop_scope(&mut self) {
-        self.scope_stack.pop();
-        if let Some(parent_scope) = self.scope_stack.last().cloned() {
-            self.top_category = match parent_scope {
-                Scope::Object => self.cat_obj,
-                Scope::Array => self.cat_arr,
-            };
-        }
-    }
-
-    fn push_label(&mut self, label: StringHandle, category: CategoryHandle) {
-        let top_frame = FrameInfo {
-            frame: Frame::Label(self.top_label),
-            category_pair: self.top_category.into(),
-            flags: FrameFlags::empty(),
-        };
-        let top_frame_handle = self.profile.intern_frame(self.thread, top_frame);
-        let new_stack_handle =
-            self.profile
-                .intern_stack(self.thread, self.stack.last().cloned(), top_frame_handle);
-        self.stack.push(new_stack_handle);
-        self.stack_labels.push((self.top_label, self.top_category));
-        self.top_label = label;
-        self.top_category = category;
-    }
-
-    fn pop_label(&mut self) {
-        self.stack.pop().unwrap();
-        let (label, category) = self.stack_labels.pop().unwrap();
-        self.top_label = label;
-        self.top_category = category;
-    }
-
-    fn maybe_end_property(&mut self) {
-        if self.scope_stack.last() == Some(&Scope::Object) {
-            // Pop the current property from the stack.
-            self.pop_label();
-            self.string_stack.pop();
-        }
-    }
-
     pub fn finish(mut self) -> Profile {
         self.flush();
         self.profile
@@ -328,60 +284,242 @@ impl State {
 
     fn begin_object(&mut self, pos_at_obj_start: u64) {
         self.advance(pos_at_obj_start);
-        self.push_scope(Scope::Object);
+
+        let (parent_stack, path, array_depth) = match self.stack.last() {
+            Some(StackEntry::Object {
+                stack_handle,
+                path_for_current_prop_value,
+                array_depth,
+                ..
+            }) => (
+                Some(*stack_handle),
+                path_for_current_prop_value.unwrap(),
+                *array_depth,
+            ),
+            Some(StackEntry::Array {
+                stack_handle,
+                path_for_array_elems,
+                array_depth,
+                ..
+            }) => (Some(*stack_handle), *path_for_array_elems, *array_depth),
+            None => (None, self.root_path, 0),
+        };
+        let key = (parent_stack, path, self.c_obj);
+        let stack_handle = if let Some(s) = self.node_cache.get(&key) {
+            *s
+        } else {
+            let label = self.profile.intern_string(&format!(
+                "{} (object)",
+                self.string_interner.resolve(path).unwrap()
+            ));
+            let frame_info = FrameInfo {
+                frame: Frame::Label(label),
+                category_pair: self.c_obj.into(),
+                flags: FrameFlags::empty(),
+            };
+            let frame_handle = self.profile.intern_frame(self.thread, frame_info);
+            let stack_handle = self
+                .profile
+                .intern_stack(self.thread, parent_stack, frame_handle);
+            self.node_cache.insert(key, stack_handle);
+            stack_handle
+        };
+        self.top_stack_handle = Some(stack_handle);
+        self.stack.push(StackEntry::Object {
+            stack_handle,
+            path,
+            path_for_current_prop_value: None,
+            array_depth,
+        });
     }
 
     fn object_property(&mut self, pos_at_prop_key_start: u64, property_key: String) {
         self.advance(pos_at_prop_key_start);
 
-        let parent_string = self.string_stack.last().unwrap();
-        let concat_string = format!("{parent_string}.{property_key}");
-        let label = self.profile.intern_string(&concat_string);
-        self.string_stack.push(concat_string);
-        self.push_label(label, self.cat_obj);
+        let property_key = self.string_interner.get_or_intern(&property_key);
+        let (obj_stack, obj_path, path_for_current_prop_value) =
+            match self.stack.last_mut().unwrap() {
+                StackEntry::Object {
+                    stack_handle,
+                    path,
+                    path_for_current_prop_value,
+                    ..
+                } => (*stack_handle, *path, path_for_current_prop_value),
+                _ => panic!(),
+            };
+
+        let cache_key = (obj_path, property_key);
+        let property_path = if let Some(s) = self.cached_property_paths.get(&cache_key) {
+            *s
+        } else {
+            let property_path = format!(
+                "{}.{}",
+                self.string_interner.resolve(obj_path).unwrap(),
+                self.string_interner.resolve(property_key).unwrap()
+            );
+            let property_path = self.string_interner.get_or_intern(&property_path);
+            self.cached_property_paths.insert(cache_key, property_path);
+            property_path
+        };
+
+        let cache_key = (Some(obj_stack), property_path, self.c_property_key);
+        let stack_handle = if let Some(s) = self.node_cache.get(&cache_key) {
+            *s
+        } else {
+            let label = self.profile.intern_string(&format!(
+                "{} (property key)",
+                self.string_interner.resolve(property_path).unwrap()
+            ));
+            let frame_info = FrameInfo {
+                frame: Frame::Label(label),
+                category_pair: self.c_property_key.into(),
+                flags: FrameFlags::empty(),
+            };
+            let frame_handle = self.profile.intern_frame(self.thread, frame_info);
+            let stack_handle =
+                self.profile
+                    .intern_stack(self.thread, Some(obj_stack), frame_handle);
+            self.node_cache.insert(cache_key, stack_handle);
+            stack_handle
+        };
+        *path_for_current_prop_value = Some(property_path);
+        self.top_stack_handle = Some(stack_handle);
     }
 
     fn end_object(&mut self, pos_after_obj_end: u64) {
         self.advance(pos_after_obj_end);
-        self.pop_scope();
-        self.maybe_end_property();
+
+        self.stack.pop();
+
+        self.top_stack_handle = match self.stack.last() {
+            Some(StackEntry::Object { stack_handle, .. }) => Some(*stack_handle),
+            Some(StackEntry::Array { stack_handle, .. }) => Some(*stack_handle),
+            None => None,
+        };
     }
 
     fn begin_array(&mut self, pos_at_array_start: u64) {
         self.advance(pos_at_array_start);
 
-        self.push_scope(Scope::Array);
+        let (parent_stack, path, array_depth) = match self.stack.last() {
+            Some(StackEntry::Object {
+                stack_handle,
+                path_for_current_prop_value,
+                array_depth,
+                ..
+            }) => (
+                Some(*stack_handle),
+                path_for_current_prop_value.unwrap(),
+                *array_depth,
+            ),
+            Some(StackEntry::Array {
+                stack_handle,
+                path_for_array_elems,
+                array_depth,
+                ..
+            }) => (Some(*stack_handle), *path_for_array_elems, *array_depth),
+            None => (None, self.root_path, 0),
+        };
 
-        const INDEXER_CHARS: &str = "ijklmnopqrstuvwxyz";
-        let indexer = &INDEXER_CHARS[(self.array_depth % INDEXER_CHARS.len())..][..1];
-        let parent_string = self.string_stack.last().unwrap();
-        let concat_string = format!("{parent_string}[{indexer}]");
-        self.string_stack.push(concat_string);
-        self.array_depth += 1;
+        let cache_key = (parent_stack, path, self.c_arr);
+        let stack_handle = if let Some(s) = self.node_cache.get(&cache_key) {
+            *s
+        } else {
+            let label = self.profile.intern_string(&format!(
+                "{} (array)",
+                self.string_interner.resolve(path).unwrap()
+            ));
+            let frame_info = FrameInfo {
+                frame: Frame::Label(label),
+                category_pair: self.c_arr.into(),
+                flags: FrameFlags::empty(),
+            };
+            let frame_handle = self.profile.intern_frame(self.thread, frame_info);
+            let stack_handle = self
+                .profile
+                .intern_stack(self.thread, parent_stack, frame_handle);
+            self.node_cache.insert(cache_key, stack_handle);
+            stack_handle
+        };
+
+        let cache_key = (path, array_depth);
+        let path_for_array_elems = if let Some(s) = self.cached_indexer_paths.get(&cache_key) {
+            *s
+        } else {
+            const INDEXER_CHARS: &str = "ijklmnopqrstuvwxyz";
+            let indexer = &INDEXER_CHARS[(array_depth % INDEXER_CHARS.len())..][..1];
+            let path_for_array_elems =
+                format!("{}[{indexer}]", self.string_interner.resolve(path).unwrap());
+            let path_for_array_elems = self.string_interner.get_or_intern(&path_for_array_elems);
+            self.cached_indexer_paths
+                .insert(cache_key, path_for_array_elems);
+            path_for_array_elems
+        };
+
+        self.top_stack_handle = Some(stack_handle);
+        self.stack.push(StackEntry::Array {
+            stack_handle,
+            path_for_array_elems,
+            array_depth: array_depth + 1,
+        });
     }
 
     fn end_array(&mut self, pos_after_array_end: u64) {
         self.advance(pos_after_array_end);
-        self.string_stack.pop();
-        self.array_depth -= 1;
-        self.pop_scope();
-        self.maybe_end_property();
+
+        self.stack.pop();
+
+        self.top_stack_handle = match self.stack.last() {
+            Some(StackEntry::Object { stack_handle, .. }) => Some(*stack_handle),
+            Some(StackEntry::Array { stack_handle, .. }) => Some(*stack_handle),
+            None => None,
+        };
     }
 
     fn primitive_value(&mut self, pos_before: u64, pos_after: u64, value: JsonPrimitiveValue) {
         self.advance(pos_before);
 
-        let category = match value {
-            JsonPrimitiveValue::Number(_) => self.cat_number,
-            JsonPrimitiveValue::Boolean(_) => self.cat_bool,
-            JsonPrimitiveValue::String(_) => self.cat_str,
-            JsonPrimitiveValue::Null => self.cat_null,
+        let (parent_stack, path) = match self.stack.last() {
+            Some(StackEntry::Object {
+                stack_handle,
+                path_for_current_prop_value,
+                ..
+            }) => (Some(*stack_handle), path_for_current_prop_value.unwrap()),
+            Some(StackEntry::Array {
+                stack_handle,
+                path_for_array_elems,
+                ..
+            }) => (Some(*stack_handle), *path_for_array_elems),
+            None => (None, self.root_path),
         };
-        let prev_category = std::mem::replace(&mut self.top_category, category);
-        self.top_category = category;
-        self.advance(pos_after);
-        self.top_category = prev_category;
+        let (category, s) = match value {
+            JsonPrimitiveValue::Number(_) => (self.c_number, "number"),
+            JsonPrimitiveValue::Boolean(_) => (self.c_bool, "bool"),
+            JsonPrimitiveValue::String(_) => (self.c_str, "string"),
+            JsonPrimitiveValue::Null => (self.c_null, "null"),
+        };
 
-        self.maybe_end_property();
+        let cache_key = (parent_stack, path, category);
+        let stack_handle = if let Some(s) = self.node_cache.get(&cache_key) {
+            *s
+        } else {
+            let label = self.profile.intern_string(&format!(
+                "{} ({s})",
+                self.string_interner.resolve(path).unwrap()
+            ));
+            let frame_info = FrameInfo {
+                frame: Frame::Label(label),
+                category_pair: category.into(),
+                flags: FrameFlags::empty(),
+            };
+            let frame = self.profile.intern_frame(self.thread, frame_info);
+            let stack_handle = self.profile.intern_stack(self.thread, parent_stack, frame);
+            self.node_cache.insert(cache_key, stack_handle);
+            stack_handle
+        };
+        self.top_stack_handle = Some(stack_handle);
+
+        self.advance(pos_after);
+        self.top_stack_handle = parent_stack;
     }
 }

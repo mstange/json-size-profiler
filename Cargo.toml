@@ -24,6 +24,7 @@ serde_json = "1.0.120"
 smallvec = "1.13.2"
 indexmap = "2.7.0"
 rustc-hash = "2.1.0"
+string-interner = "0.18.0"
 
 [profile.release]
 debug = true
