@@ -10,9 +10,9 @@ use fxprof_processed_profile::{
     ReferenceTimestamp, SamplingInterval, StackHandle, ThreadHandle, Timestamp,
 };
 use indexmap::IndexMap;
+use json_session::{JsonPrimitiveValue, JsonSession, JsonSessionEvent};
 use rustc_hash::{FxBuildHasher, FxHashMap};
 use string_interner::{DefaultStringInterner, DefaultSymbol};
-use json_session::{JsonPrimitiveValue, JsonSession, JsonSessionEvent};
 
 struct IoReadIterator<R> {
     reader: R,
@@ -165,41 +165,22 @@ impl JsonPiece {
     }
 }
 
-#[derive(Debug, Clone)]
-struct JsonPieceCategories {
-    c_obj: CategoryHandle,
-    c_arr: CategoryHandle,
-    c_null: CategoryHandle,
-    c_bool: CategoryHandle,
-    c_number: CategoryHandle,
-    c_str: CategoryHandle,
-    c_property_key: CategoryHandle,
-}
-
-impl JsonPieceCategories {
-    pub fn new(profile: &mut Profile) -> Self {
-        Self {
-            c_obj: profile.add_category("Object", CategoryColor::Gray),
-            c_arr: profile.add_category("Array", CategoryColor::Gray),
-            c_null: profile.add_category("Null", CategoryColor::Yellow),
-            c_bool: profile.add_category("Bool", CategoryColor::Brown),
-            c_number: profile.add_category("Number", CategoryColor::Green),
-            c_str: profile.add_category("String", CategoryColor::Blue),
-            c_property_key: profile.add_category("Property Key", CategoryColor::LightBlue),
-        }
+fn make_json_piece_categories(profile: &mut Profile) -> FxHashMap<JsonPiece, CategoryHandle> {
+    use CategoryColor::*;
+    const PIECES: [(JsonPiece, &str, CategoryColor); 7] = [
+        (JsonPiece::Object, "Object", Gray),
+        (JsonPiece::Array, "Array", Gray),
+        (JsonPiece::Null, "Null", Yellow),
+        (JsonPiece::Bool, "Bool", Brown),
+        (JsonPiece::Number, "Number", Green),
+        (JsonPiece::String, "String", Blue),
+        (JsonPiece::PropertyKey, "Property Key", LightBlue),
+    ];
+    let mut map = FxHashMap::default();
+    for (piece, name, color) in PIECES {
+        map.insert(piece, profile.add_category(name, color));
     }
-
-    pub fn get(&self, piece: JsonPiece) -> CategoryHandle {
-        match piece {
-            JsonPiece::Object => self.c_obj,
-            JsonPiece::Array => self.c_arr,
-            JsonPiece::Null => self.c_null,
-            JsonPiece::Bool => self.c_bool,
-            JsonPiece::Number => self.c_number,
-            JsonPiece::String => self.c_str,
-            JsonPiece::PropertyKey => self.c_property_key,
-        }
-    }
+    map
 }
 
 enum Scope {
@@ -228,7 +209,7 @@ struct State {
     root_path: DefaultSymbol,
     scope_stack: Vec<Scope>,
     top_stack_handle: Option<StackHandle>,
-    categories: JsonPieceCategories,
+    categories: FxHashMap<JsonPiece, CategoryHandle>,
     last_pos: u64,
     /// How many bytes, roughly, we should have consumed for each
     /// emitted sample.
@@ -254,7 +235,7 @@ impl State {
         let process = profile.add_process("Bytes", 0, Timestamp::from_nanos_since_reference(0));
         let thread = profile.add_thread(process, 0, Timestamp::from_nanos_since_reference(0), true);
 
-        let categories = JsonPieceCategories::new(&mut profile);
+        let categories = make_json_piece_categories(&mut profile);
 
         let mut string_interner = DefaultStringInterner::new();
         let root_path = string_interner.get_or_intern("json");
@@ -353,7 +334,7 @@ impl State {
             self.string_interner.resolve(parent_scope.path).unwrap(),
             piece.description()
         ));
-        let category = self.categories.get(piece);
+        let category = self.categories[&piece];
         let frame_info = FrameInfo {
             frame: Frame::Label(label),
             category_pair: category.into(),
