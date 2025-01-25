@@ -148,7 +148,7 @@ enum JsonPiece {
     Bool,
     Number,
     String,
-    ProperyKey,
+    PropertyKey,
 }
 
 impl JsonPiece {
@@ -160,7 +160,7 @@ impl JsonPiece {
             JsonPiece::Bool => "bool",
             JsonPiece::Number => "number",
             JsonPiece::String => "string",
-            JsonPiece::ProperyKey => "propery tey",
+            JsonPiece::PropertyKey => "property key",
         }
     }
 }
@@ -197,7 +197,7 @@ impl JsonPieceCategories {
             JsonPiece::Bool => self.c_bool,
             JsonPiece::Number => self.c_number,
             JsonPiece::String => self.c_str,
-            JsonPiece::ProperyKey => self.c_property_key,
+            JsonPiece::PropertyKey => self.c_property_key,
         }
     }
 }
@@ -457,7 +457,7 @@ impl State {
         };
 
         *path_for_current_prop_value = Some(property_path);
-        let stack_handle = self.get_stack(&obj_scope, JsonPiece::ProperyKey);
+        let stack_handle = self.get_stack(&obj_scope, JsonPiece::PropertyKey);
         self.top_stack_handle = Some(stack_handle);
     }
 
