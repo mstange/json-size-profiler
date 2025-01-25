@@ -1,4 +1,4 @@
-tinyjson-session
+json-session
 ========
 
 Parses a JSON document and calls callbacks on a `JsonSessionObserver`.

@@ -19,7 +19,7 @@ include = [
 
 [dependencies]
 fxprof-processed-profile = { git = "https://github.com/mstange/samply", branch = "stack-handle" }
-tinyjson-session = { path = "./crates/tinyjson-session" }
+json-session = { path = "./crates/json-session" }
 serde_json = "1.0.120"
 smallvec = "1.13.2"
 indexmap = "2.7.0"

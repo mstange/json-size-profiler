@@ -1,0 +1,21 @@
+[package]
+name = "json-session"
+version = "0.1.0"
+edition = "2018"
+authors = ["Markus Stange <mstange.moz@gmail.com>", "rhysd <lin90162@yahoo.co.jp>"]
+description = "Parses a JSON document and calls callbacks on a JsonSessionObserver."
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/mstange/json-size-profiler"
+keywords = ["json"]
+categories = [ "parsing"]
+
+include = [
+  "Cargo.toml",
+  "README.md",
+  "LICENSE.txt",
+  "src/*.rs",
+]
+
+[dependencies]
+smallvec = "1.13.2"

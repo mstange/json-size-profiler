@@ -1,5 +1,5 @@
 [package]
-name = "tinyjson-session"
+name = "json-session-parser"
 version = "0.1.0"
 edition = "2018"
 authors = ["Markus Stange <mstange.moz@gmail.com>", "rhysd <lin90162@yahoo.co.jp>"]
@@ -19,3 +19,4 @@ include = [
 
 [dependencies]
 smallvec = "1.13.2"
+json-session = { path = "../json-session" }

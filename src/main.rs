@@ -12,7 +12,7 @@ use fxprof_processed_profile::{
 use indexmap::IndexMap;
 use rustc_hash::{FxBuildHasher, FxHashMap};
 use string_interner::{DefaultStringInterner, DefaultSymbol};
-use tinyjson_session::{JsonPrimitiveValue, JsonSession, JsonSessionEvent};
+use json_session::{JsonPrimitiveValue, JsonSession, JsonSessionEvent};
 
 struct IoReadIterator<R> {
     reader: R,
