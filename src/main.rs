@@ -425,30 +425,23 @@ impl State {
         self.advance(pos_at_prop_key_start);
 
         let property_key = self.string_interner.get_or_intern(&property_key);
-        let (obj_scope, path_for_current_prop_value) = match self.scope_stack.last_mut().unwrap() {
-            Scope::Object {
-                stack_handle,
-                path,
-                path_for_current_prop_value,
-                array_depth,
-            } => (
-                ScopeInfo {
-                    stack_handle: Some(*stack_handle),
-                    path: *path,
-                    array_depth: *array_depth,
-                },
-                path_for_current_prop_value,
-            ),
-            _ => panic!(),
-        };
+        let (obj_scope_path, path_for_current_prop_value) =
+            match self.scope_stack.last_mut().unwrap() {
+                Scope::Object {
+                    path,
+                    path_for_current_prop_value,
+                    ..
+                } => (*path, path_for_current_prop_value),
+                _ => panic!(),
+            };
 
-        let cache_key = (obj_scope.path, property_key);
+        let cache_key = (obj_scope_path, property_key);
         let property_path = if let Some(s) = self.cached_property_paths.get(&cache_key) {
             *s
         } else {
             let property_path = format!(
                 "{}.{}",
-                self.string_interner.resolve(obj_scope.path).unwrap(),
+                self.string_interner.resolve(obj_scope_path).unwrap(),
                 self.string_interner.resolve(property_key).unwrap()
             );
             let property_path = self.string_interner.get_or_intern(&property_path);
@@ -457,6 +450,7 @@ impl State {
         };
 
         *path_for_current_prop_value = Some(property_path);
+        let obj_scope = self.current_scope();
         let stack_handle = self.get_stack(&obj_scope, JsonPiece::PropertyKey);
         self.top_stack_handle = Some(stack_handle);
     }
