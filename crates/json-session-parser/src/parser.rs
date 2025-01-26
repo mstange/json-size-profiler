@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use json_session::{JsonParseResult, JsonPrimitiveValue, JsonSession, JsonSessionEvent};
+use json_session::{JsonFragment, JsonParseResult, JsonPrimitiveValue, JsonSession};
 
 use super::json_value::JsonValue;
 
@@ -46,34 +46,34 @@ impl<I: Iterator<Item = u8>> JsonParser<I> {
         let mut session = JsonSession::new(self.iter);
         let mut state = JsonParserState::new();
         while let Some(event) = session.next()? {
-            match event {
-                JsonSessionEvent::BeginObject { .. } => {
+            match event.fragment {
+                JsonFragment::BeginObject => {
                     state
                         .stack
                         .push(JsonParserStateStackEntry::Object(HashMap::new(), None));
                 }
-                JsonSessionEvent::ObjectProperty { property_key, .. } => {
+                JsonFragment::ObjectProperty(property_key) => {
                     match state.stack.last_mut().unwrap() {
                         JsonParserStateStackEntry::Object(_, key) => *key = Some(property_key),
                         _ => panic!(),
                     }
                 }
-                JsonSessionEvent::EndObject { .. } => match state.stack.pop().unwrap() {
+                JsonFragment::EndObject => match state.stack.pop().unwrap() {
                     JsonParserStateStackEntry::Object(m, None) => {
                         state.put_value(JsonValue::Object(m))
                     }
                     _ => panic!(),
                 },
-                JsonSessionEvent::BeginArray { .. } => {
+                JsonFragment::BeginArray => {
                     state
                         .stack
                         .push(JsonParserStateStackEntry::Array(Vec::new()));
                 }
-                JsonSessionEvent::EndArray { .. } => match state.stack.pop().unwrap() {
+                JsonFragment::EndArray => match state.stack.pop().unwrap() {
                     JsonParserStateStackEntry::Array(v) => state.put_value(JsonValue::Array(v)),
                     _ => panic!(),
                 },
-                JsonSessionEvent::PrimitiveValue { value, .. } => {
+                JsonFragment::PrimitiveValue(value) => {
                     let value = match value {
                         JsonPrimitiveValue::Number(n) => JsonValue::Number(n),
                         JsonPrimitiveValue::Boolean(b) => JsonValue::Boolean(b),

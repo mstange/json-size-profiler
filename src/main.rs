@@ -10,7 +10,7 @@ use fxprof_processed_profile::{
     ReferenceTimestamp, SamplingInterval, StackHandle, ThreadHandle, Timestamp,
 };
 use indexmap::IndexMap;
-use json_session::{JsonPrimitiveValue, JsonSession, JsonSessionEvent};
+use json_session::{JsonFragment, JsonPrimitiveValue, JsonSession};
 use rustc_hash::{FxBuildHasher, FxHashMap};
 use string_interner::{DefaultStringInterner, DefaultSymbol};
 
@@ -102,30 +102,17 @@ fn main() {
     let mut state = State::new("JSON", bytes_per_sample);
 
     while let Some(event) = session.next().unwrap() {
-        match event {
-            JsonSessionEvent::BeginObject {
-                location_at_obj_start,
-            } => state.begin_object(location_at_obj_start.byte_offset),
-            JsonSessionEvent::ObjectProperty {
-                property_key,
-                location_at_prop_key_start,
-            } => state.object_property(location_at_prop_key_start.byte_offset, property_key),
-            JsonSessionEvent::EndObject {
-                location_after_obj_end,
-            } => state.end_object(location_after_obj_end.byte_offset),
-            JsonSessionEvent::BeginArray {
-                location_at_array_start,
-            } => state.begin_array(location_at_array_start.byte_offset),
-            JsonSessionEvent::EndArray {
-                location_after_array_end,
-            } => state.end_array(location_after_array_end.byte_offset),
-            JsonSessionEvent::PrimitiveValue {
-                value,
-                location_at_value_start,
-                location_after_value_end,
-            } => state.primitive_value(
-                location_at_value_start.byte_offset,
-                location_after_value_end.byte_offset,
+        match event.fragment {
+            JsonFragment::BeginObject => state.begin_object(event.span.start.byte_offset),
+            JsonFragment::ObjectProperty(property_key) => {
+                state.object_property(event.span.start.byte_offset, property_key)
+            }
+            JsonFragment::EndObject => state.end_object(event.span.end.byte_offset),
+            JsonFragment::BeginArray => state.begin_array(event.span.start.byte_offset),
+            JsonFragment::EndArray => state.end_array(event.span.end.byte_offset),
+            JsonFragment::PrimitiveValue(value) => state.primitive_value(
+                event.span.start.byte_offset,
+                event.span.end.byte_offset,
                 value,
             ),
         }
