@@ -4,21 +4,6 @@ use json_session::{JsonParseResult, JsonPrimitiveValue, JsonSession, JsonSession
 
 use super::json_value::JsonValue;
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum JsonToken {
-    Number(f64),
-    True,
-    False,
-    String(String),
-    Null,
-    ArrayOpen,
-    Comma,
-    ArrayClose,
-    ObjOpen,
-    Colon,
-    ObjClose,
-}
-
 pub struct JsonParser<I: Iterator<Item = u8>> {
     iter: I,
 }

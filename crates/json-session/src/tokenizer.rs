@@ -3,7 +3,7 @@ use std::iter::Peekable;
 
 use smallvec::SmallVec;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub enum JsonToken {
     Number(f64),
     True,
@@ -18,16 +18,34 @@ pub enum JsonToken {
     ObjClose,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Location {
+    pub byte_offset: u64,
+    pub line: u64,
+    pub col: u64,
+}
+
+impl Location {
+    fn advance_by_byte(&mut self, c: u8) {
+        if c == b'\n' {
+            self.col = 0;
+            self.line += 1;
+        } else {
+            self.col += 1;
+        }
+        self.byte_offset += 1;
+    }
+}
+
 #[derive(Debug)]
 pub struct JsonParseError {
     msg: String,
-    line: u64,
-    col: u64,
+    location: Location,
 }
 
 impl JsonParseError {
-    fn new(msg: String, line: u64, col: u64) -> JsonParseError {
-        JsonParseError { msg, line, col }
+    pub fn new(msg: String, location: Location) -> JsonParseError {
+        JsonParseError { msg, location }
     }
 }
 
@@ -36,7 +54,7 @@ impl fmt::Display for JsonParseError {
         write!(
             f,
             "Parse error at line:{}, col:{}: {}",
-            self.line, self.col, &self.msg,
+            self.location.line, self.location.col, &self.msg,
         )
     }
 }
@@ -54,97 +72,67 @@ fn is_whitespace(c: u8) -> bool {
 
 pub struct JsonTokenizer<I: Iterator<Item = u8>> {
     bytes: Peekable<I>,
-    pub offset: u64,
-    line: u64,
-    col: u64,
+    location: Location,
 }
 
 impl<I: Iterator<Item = u8>> JsonTokenizer<I> {
     pub fn new(it: I) -> Self {
         JsonTokenizer {
             bytes: it.peekable(),
-            offset: 0,
-            line: 1,
-            col: 0,
+            location: Location::default(),
         }
     }
 
-    pub fn err<T>(&self, msg: String) -> Result<T, JsonParseError> {
-        Err(JsonParseError::new(msg, self.line, self.col))
+    pub fn location(&self) -> Location {
+        self.location
     }
 
-    fn unexpected_eof(&self) -> Result<u8, JsonParseError> {
-        Err(JsonParseError::new(
-            String::from("Unexpected EOF"),
-            self.line,
-            self.col,
-        ))
-    }
-
-    fn next_pos(&mut self, c: u8) {
-        if c == b'\n' {
-            self.col = 0;
-            self.line += 1;
-        } else {
-            self.col += 1;
+    pub fn expect_eof(&mut self) -> Result<(), JsonParseError> {
+        match self.peek_byte_skip_whitespace() {
+            Some(b) => self.err(format!("Expected EOF but found byte {b:#x}")),
+            None => Ok(()),
         }
-        self.offset += 1;
     }
 
-    fn peek(&mut self) -> Result<u8, JsonParseError> {
+    fn err<T>(&self, msg: String) -> Result<T, JsonParseError> {
+        Err(JsonParseError::new(msg, self.location))
+    }
+
+    fn eof_err(&self) -> JsonParseError {
+        JsonParseError::new(String::from("Unexpected EOF"), self.location)
+    }
+
+    fn peek_byte_skip_whitespace(&mut self) -> Option<u8> {
         while let Some(c) = self.bytes.peek().copied() {
-            if !is_whitespace(c) {
-                return Ok(c);
+            if is_whitespace(c) {
+                self.bytes.next().unwrap();
+                self.location.advance_by_byte(c);
+                continue;
             }
-            self.next_pos(c);
-            self.bytes.next().unwrap();
-        }
-        self.unexpected_eof()
-    }
-
-    pub fn next(&mut self) -> Option<u8> {
-        while let Some(c) = self.bytes.next() {
-            self.next_pos(c);
-            if !is_whitespace(c) {
-                return Some(c);
-            }
-        }
-        None
-    }
-
-    fn next_no_skip(&mut self) -> Option<u8> {
-        if let Some(c) = self.bytes.next() {
-            self.next_pos(c);
             return Some(c);
         }
         None
     }
 
-    fn consume(&mut self) -> Result<u8, JsonParseError> {
-        if let Some(c) = self.next() {
-            Ok(c)
-        } else {
-            self.unexpected_eof()
+    fn consume_byte(&mut self) -> Result<u8, JsonParseError> {
+        match self.bytes.next() {
+            Some(b) => {
+                self.location.advance_by_byte(b);
+                Ok(b)
+            }
+            None => Err(self.eof_err()),
         }
     }
 
-    fn consume_no_skip(&mut self) -> Result<u8, JsonParseError> {
-        if let Some(c) = self.next_no_skip() {
-            Ok(c)
-        } else {
-            self.unexpected_eof()
-        }
-    }
-
-    fn parse_string(&mut self) -> JsonParseResult<JsonToken> {
-        if self.consume()? != b'"' {
-            return self.err(String::from("String must starts with double quote"));
+    fn consume_string(&mut self) -> JsonParseResult<JsonToken> {
+        if self.consume_byte().unwrap() != b'"' {
+            panic!("This function should only be called after the caller has encountered a start quote");
         }
 
         let mut s = SmallVec::<[u8; 10]>::new();
         loop {
-            let c = match self.consume_no_skip()? {
-                b'\\' => match self.consume_no_skip()? {
+            let b = match self.consume_byte()? {
+                b'\\' => match self.consume_byte()? {
                     b'\\' => b'\\',
                     b'/' => b'/',
                     b'"' => b'"',
@@ -156,7 +144,7 @@ impl<I: Iterator<Item = u8>> JsonTokenizer<I> {
                     b'u' => {
                         let mut u = 0u16;
                         for _ in 0..4 {
-                            let b = self.consume_no_skip()?;
+                            let b = self.consume_byte()?;
                             if let Some(h) = ascii_byte_to_hex_digit(b) {
                                 u = u * 0x10 + h as u16;
                             } else {
@@ -168,14 +156,12 @@ impl<I: Iterator<Item = u8>> JsonTokenizer<I> {
                                 // First surrogate
 
                                 // Parse the second surrogate, which must be directly following.
-                                if self.consume_no_skip()? != b'\\'
-                                    || self.consume_no_skip()? != b'u'
-                                {
+                                if self.consume_byte()? != b'\\' || self.consume_byte()? != b'u' {
                                     return self.err(format!("First UTF-16 surragate {u:#x} must be directly followed by a second \\uXXXX surrogate."));
                                 }
                                 let mut u2 = 0u16;
                                 for _ in 0..4 {
-                                    let b = self.consume_no_skip()?;
+                                    let b = self.consume_byte()?;
                                     if let Some(h) = ascii_byte_to_hex_digit(b) {
                                         u2 = u2 * 0x10 + h as u16;
                                     } else {
@@ -199,11 +185,11 @@ impl<I: Iterator<Item = u8>> JsonTokenizer<I> {
                         };
                         match c.len_utf8() {
                             1 => s.push(c as u8),
-                            _ => s.extend(c.encode_utf8(&mut [0; 4]).as_bytes().iter().cloned()),
+                            _ => s.extend_from_slice(c.encode_utf8(&mut [0; 4]).as_bytes()),
                         }
                         continue;
                     }
-                    c => return self.err(format!("'\\{}' is invalid escaped character", c)),
+                    b => return self.err(format!("{b:#x} is invalid escaped character")),
                 },
                 b'"' => {
                     let s = String::from_utf8(s.to_vec())
@@ -214,65 +200,49 @@ impl<I: Iterator<Item = u8>> JsonTokenizer<I> {
                 // string literals but 0x7f is control character.
                 // Rough spec of JSON says string literal cannot contain control characters. But it
                 // can actually contain 0x7f.
-                c if c < 0x20 => {
-                    return self.err(format!("String cannot contain control character {c:#x}"));
+                b if b < 0x20 => {
+                    return self.err(format!("Unexpected control character {b:#x} in string"));
                 }
-                c => c,
+                b => b,
             };
 
-            s.push(c);
+            s.push(b);
         }
     }
 
-    fn parse_constant(&mut self, s: &'static [u8]) -> Option<JsonParseError> {
-        for c in s {
-            match self.consume_no_skip() {
-                Ok(x) if x != *c => {
-                    return Some(JsonParseError::new(
-                        format!(
-                            "Unexpected character '{}' while parsing '{}'",
-                            c,
-                            std::str::from_utf8(s).unwrap()
-                        ),
-                        self.line,
-                        self.col,
-                    ));
-                }
-                Ok(_) => {}
-                Err(e) => return Some(e),
+    fn consume_constant(&mut self, s: &'static str) -> Result<(), JsonParseError> {
+        for expected_byte in s.as_bytes() {
+            let b = self.consume_byte()?;
+            if b != *expected_byte {
+                return Err(JsonParseError::new(
+                    format!("Unexpected byte {b:#x} while parsing '{s}'",),
+                    self.location,
+                ));
             }
         }
-        None
+        Ok(())
     }
 
-    fn parse_null(&mut self) -> JsonParseResult<JsonToken> {
-        match self.parse_constant(b"null") {
-            Some(err) => Err(err),
-            None => Ok(JsonToken::Null),
+    fn consume_null(&mut self) -> JsonParseResult<JsonToken> {
+        self.consume_constant("null")?;
+        Ok(JsonToken::Null)
+    }
+
+    fn consume_true(&mut self) -> JsonParseResult<JsonToken> {
+        self.consume_constant("true")?;
+        Ok(JsonToken::True)
+    }
+
+    fn consume_false(&mut self) -> JsonParseResult<JsonToken> {
+        self.consume_constant("false")?;
+        Ok(JsonToken::False)
+    }
+
+    fn consume_number(&mut self) -> JsonParseResult<JsonToken> {
+        let neg = *self.bytes.peek().unwrap() == b'-';
+        if neg {
+            self.consume_byte().unwrap();
         }
-    }
-
-    fn parse_true(&mut self) -> JsonParseResult<JsonToken> {
-        match self.parse_constant(b"true") {
-            Some(err) => Err(err),
-            None => Ok(JsonToken::True),
-        }
-    }
-
-    fn parse_false(&mut self) -> JsonParseResult<JsonToken> {
-        match self.parse_constant(b"false") {
-            Some(err) => Err(err),
-            None => Ok(JsonToken::False),
-        }
-    }
-
-    fn parse_number(&mut self) -> JsonParseResult<JsonToken> {
-        let neg = if self.peek()? == b'-' {
-            self.consume_no_skip().unwrap();
-            true
-        } else {
-            false
-        };
 
         let mut s = SmallVec::<[u8; 16]>::new();
         let mut saw_dot = false;
@@ -291,7 +261,7 @@ impl<I: Iterator<Item = u8>> JsonTokenizer<I> {
                 }
                 _ => break,
             }
-            self.consume_no_skip().unwrap();
+            self.consume_byte().unwrap();
         }
 
         if s.is_empty() {
@@ -304,7 +274,7 @@ impl<I: Iterator<Item = u8>> JsonTokenizer<I> {
         }
 
         if saw_dot {
-            s.push(self.consume_no_skip().unwrap()); // eat '.'
+            s.push(self.consume_byte().unwrap()); // eat '.'
             while let Some(d) = self.bytes.peek() {
                 match d {
                     b'0'..=b'9' => s.push(*d),
@@ -314,7 +284,7 @@ impl<I: Iterator<Item = u8>> JsonTokenizer<I> {
                     }
                     _ => break,
                 }
-                self.consume_no_skip().unwrap();
+                self.consume_byte().unwrap();
             }
             if s.ends_with(b".") {
                 return self.err("Fraction part of number must not be empty".to_string());
@@ -322,9 +292,9 @@ impl<I: Iterator<Item = u8>> JsonTokenizer<I> {
         }
 
         if saw_exp {
-            s.push(self.consume_no_skip().unwrap()); // eat 'e' or 'E'
+            s.push(self.consume_byte().unwrap()); // eat 'e' or 'E'
             if let Some(b'+') | Some(b'-') = self.bytes.peek() {
-                s.push(self.consume_no_skip().unwrap());
+                s.push(self.consume_byte().unwrap());
             }
 
             let mut saw_digit = false;
@@ -334,7 +304,7 @@ impl<I: Iterator<Item = u8>> JsonTokenizer<I> {
                     _ => break,
                 }
                 saw_digit = true;
-                self.consume_no_skip().unwrap();
+                self.consume_byte().unwrap();
             }
 
             if !saw_digit {
@@ -350,21 +320,24 @@ impl<I: Iterator<Item = u8>> JsonTokenizer<I> {
     }
 
     pub fn next_token(&mut self) -> JsonParseResult<JsonToken> {
-        let token = match self.peek()? {
+        let b = self
+            .peek_byte_skip_whitespace()
+            .ok_or_else(|| self.eof_err())?;
+        let token = match b {
             b'[' => JsonToken::ArrayOpen,
             b']' => JsonToken::ArrayClose,
             b'{' => JsonToken::ObjOpen,
             b'}' => JsonToken::ObjClose,
             b':' => JsonToken::Colon,
             b',' => JsonToken::Comma,
-            b'0'..=b'9' | b'-' => return self.parse_number(),
-            b'"' => return self.parse_string(),
-            b't' => return self.parse_true(),
-            b'f' => return self.parse_false(),
-            b'n' => return self.parse_null(),
+            b'0'..=b'9' | b'-' => return self.consume_number(),
+            b'"' => return self.consume_string(),
+            b't' => return self.consume_true(),
+            b'f' => return self.consume_false(),
+            b'n' => return self.consume_null(),
             c => return self.err(format!("Invalid byte: {c:#x}")),
         };
-        self.consume_no_skip()?;
+        self.consume_byte()?;
         Ok(token)
     }
 }

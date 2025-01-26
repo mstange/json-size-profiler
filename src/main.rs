@@ -103,27 +103,31 @@ fn main() {
 
     while let Some(event) = session.next().unwrap() {
         match event {
-            JsonSessionEvent::BeginObject { pos_at_obj_start } => {
-                state.begin_object(pos_at_obj_start)
-            }
+            JsonSessionEvent::BeginObject {
+                location_at_obj_start,
+            } => state.begin_object(location_at_obj_start.byte_offset),
             JsonSessionEvent::ObjectProperty {
                 property_key,
-                pos_at_prop_key_start,
-            } => state.object_property(pos_at_prop_key_start, property_key),
-            JsonSessionEvent::EndObject { pos_after_obj_end } => {
-                state.end_object(pos_after_obj_end)
-            }
-            JsonSessionEvent::BeginArray { pos_at_array_start } => {
-                state.begin_array(pos_at_array_start)
-            }
+                location_at_prop_key_start,
+            } => state.object_property(location_at_prop_key_start.byte_offset, property_key),
+            JsonSessionEvent::EndObject {
+                location_after_obj_end,
+            } => state.end_object(location_after_obj_end.byte_offset),
+            JsonSessionEvent::BeginArray {
+                location_at_array_start,
+            } => state.begin_array(location_at_array_start.byte_offset),
             JsonSessionEvent::EndArray {
-                pos_after_array_end,
-            } => state.end_array(pos_after_array_end),
+                location_after_array_end,
+            } => state.end_array(location_after_array_end.byte_offset),
             JsonSessionEvent::PrimitiveValue {
                 value,
-                pos_before,
-                pos_after,
-            } => state.primitive_value(pos_before, pos_after, value),
+                location_at_value_start,
+                location_after_value_end,
+            } => state.primitive_value(
+                location_at_value_start.byte_offset,
+                location_after_value_end.byte_offset,
+                value,
+            ),
         }
     }
 
