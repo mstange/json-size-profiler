@@ -7,7 +7,7 @@ use std::{
 
 use fxprof_processed_profile::{
     CategoryColor, CategoryHandle, CpuDelta, Frame, FrameFlags, FrameInfo, Profile,
-    ReferenceTimestamp, SamplingInterval, StackHandle, ThreadHandle, Timestamp,
+    ReferenceTimestamp, SamplingInterval, StackHandle, ThreadHandle, Timestamp, WeightType,
 };
 use indexmap::IndexMap;
 use json_session::{JsonFragment, JsonPrimitiveValue, JsonSession};
@@ -225,6 +225,7 @@ impl State {
         );
         let process = profile.add_process("Bytes", 0, Timestamp::from_nanos_since_reference(0));
         let thread = profile.add_thread(process, 0, Timestamp::from_nanos_since_reference(0), true);
+        profile.set_thread_samples_weight_type(thread, WeightType::Bytes);
 
         let categories = make_json_piece_categories(&mut profile);
 
