@@ -1,7 +1,7 @@
 [package]
 name = "json-session"
 version = "0.1.0"
-edition = "2018"
+edition = "2021"
 authors = ["Markus Stange <mstange.moz@gmail.com>", "rhysd <lin90162@yahoo.co.jp>"]
 description = "A streaming parser for JSON which emits fragments and location spans from an iterator-style API."
 license = "MIT"

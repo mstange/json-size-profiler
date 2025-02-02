@@ -1,7 +1,7 @@
 [package]
 name = "json-session-parser"
 version = "0.1.0"
-edition = "2018"
+edition = "2021"
 authors = ["Markus Stange <mstange.moz@gmail.com>", "rhysd <lin90162@yahoo.co.jp>"]
 description = "Parses a JSON document and calls callbacks on a JsonSessionObserver."
 license = "MIT"
