@@ -12,17 +12,23 @@
 //!
 //! # fn main() {
 //!     let s = r#"{"key1": 1234, "key2": [true], "key3": "value" }"#;
+//!     let expected = &[
+//!         JsonFragment::BeginObject,
+//!         JsonFragment::ObjectProperty(String::from("key1")),
+//!         JsonFragment::PrimitiveValue(JsonPrimitiveValue::Number(1234.0)),
+//!         JsonFragment::ObjectProperty(String::from("key2")),
+//!         JsonFragment::BeginArray,
+//!         JsonFragment::PrimitiveValue(JsonPrimitiveValue::Boolean(true)),
+//!         JsonFragment::EndArray,
+//!         JsonFragment::ObjectProperty(String::from("key3")),
+//!         JsonFragment::PrimitiveValue(JsonPrimitiveValue::String(String::from("value"))),
+//!         JsonFragment::EndObject,
+//!     ];
 //!     let mut session = JsonSession::new(s.as_bytes().iter().cloned());
-//!     session.next().unwrap().unwrap().fragment; // JsonFragment::BeginObject
-//!     session.next().unwrap().unwrap().fragment; // JsonFragment::ObjectProperty(String::from("key1"))
-//!     session.next().unwrap().unwrap().fragment; // JsonFragment::PrimitiveValue(JsonPrimitiveValue::Number(1234.0));
-//!     session.next().unwrap().unwrap().fragment; // JsonFragment::ObjectProperty(String::from("key2"))
-//!     session.next().unwrap().unwrap().fragment; // JsonFragment::BeginArray
-//!     session.next().unwrap().unwrap().fragment; // JsonFragment::PrimitiveValue(JsonPrimitiveValue::Bool(true));
-//!     session.next().unwrap().unwrap().fragment; // JsonFragment::EndArray
-//!     session.next().unwrap().unwrap().fragment; // JsonFragment::ObjectProperty(String::from("key3"))
-//!     session.next().unwrap().unwrap().fragment; // JsonFragment::PrimitiveValue(JsonPrimitiveValue::String(String::from(value)));
-//!     session.next().unwrap().unwrap().fragment; // JsonFragment::EndObject
+//!     for expected_fragment in expected {
+//!         let fragment = session.next().unwrap().unwrap().fragment;
+//!         assert_eq!(fragment, *expected_fragment);
+//!     }
 //!     assert!(session.next().unwrap().is_none());
 //! # }
 //!
