@@ -3,6 +3,7 @@ use std::iter::Peekable;
 
 use smallvec::SmallVec;
 
+/// A JSON token.
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub enum JsonToken {
     Number(f64),
@@ -18,6 +19,7 @@ pub enum JsonToken {
     ObjClose,
 }
 
+/// A byte offset and the corresponding line and column number.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Location {
     pub byte_offset: u64,
@@ -37,6 +39,7 @@ impl Location {
     }
 }
 
+/// The error type used in this crate. Comes with Location information.
 #[derive(Debug)]
 pub struct JsonParseError {
     msg: String,
@@ -44,8 +47,19 @@ pub struct JsonParseError {
 }
 
 impl JsonParseError {
+    /// Creates a new [`JsonParseError`].
     pub fn new(msg: String, location: Location) -> JsonParseError {
         JsonParseError { msg, location }
+    }
+
+    /// The error message.
+    pub fn msg(&self) -> &str {
+        &self.msg
+    }
+
+    /// The location in the source document at which the parse error was encountered.
+    pub fn location(&self) -> Location {
+        self.location
     }
 }
 
@@ -61,6 +75,7 @@ impl fmt::Display for JsonParseError {
 
 impl std::error::Error for JsonParseError {}
 
+/// A type alias for `Result<T, JsonParseError>`.
 pub type JsonParseResult<T> = Result<T, JsonParseError>;
 
 // Note: char::is_ascii_whitespace is not available because some characters are not defined as
@@ -70,12 +85,14 @@ fn is_whitespace(c: u8) -> bool {
     matches!(c, 0x20 | 0xa | 0xd | 0x9)
 }
 
+/// A pull-based tokenizer which takes an iterator over bytes and emits [`JsonToken`]s.
 pub struct JsonTokenizer<I: Iterator<Item = u8>> {
     bytes: Peekable<I>,
     location: Location,
 }
 
 impl<I: Iterator<Item = u8>> JsonTokenizer<I> {
+    /// Create a new [`JsonTokenizer`]
     pub fn new(it: I) -> Self {
         JsonTokenizer {
             bytes: it.peekable(),
@@ -83,10 +100,15 @@ impl<I: Iterator<Item = u8>> JsonTokenizer<I> {
         }
     }
 
+    /// The location of the token that will be returned by the next call to `next_token()`.
+    ///
+    /// Well that's not entirely true if there is whitespace before the next token. In that
+    /// case, this wuld be the location of that white space.
     pub fn location(&self) -> Location {
         self.location
     }
 
+    /// Returns an error if there is more than just white space in the remaining bytes.
     pub fn expect_eof(&mut self) -> Result<(), JsonParseError> {
         match self.peek_byte_skip_whitespace() {
             Some(b) => self.err(format!("Expected EOF but found byte {b:#x}")),
@@ -319,6 +341,7 @@ impl<I: Iterator<Item = u8>> JsonTokenizer<I> {
         }
     }
 
+    /// Parses a token and returns it, or an error.
     pub fn next_token(&mut self) -> JsonParseResult<JsonToken> {
         let b = self
             .peek_byte_skip_whitespace()

@@ -2,14 +2,14 @@ use crate::JsonParseError;
 
 use super::tokenizer::{JsonParseResult, JsonToken, JsonTokenizer, Location};
 
-/// A fragment of JSON, along with location information.
+/// A [`JsonFragment`] paired with a [`LocationSpan`].
 #[derive(Debug, Clone)]
 pub struct JsonFragmentWithSpan {
     pub fragment: JsonFragment,
     pub span: LocationSpan,
 }
 
-/// A fragment of JSON.
+/// A fragment of JSON. This is a bit more high-level than a token.
 #[derive(Debug, Clone, PartialEq)]
 pub enum JsonFragment {
     /// Corresponds to `{`. Always followed by [`JsonFragment::ObjectProperty`] or [`JsonFragment::EndObject`].
@@ -52,6 +52,7 @@ impl JsonFragment {
     }
 }
 
+/// The start and end [`Location`] of a fragment.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct LocationSpan {
     pub start: Location,
@@ -64,6 +65,7 @@ impl LocationSpan {
     }
 }
 
+/// A JSON value which is not an object or an array.
 #[derive(Debug, Clone, PartialEq)]
 pub enum JsonPrimitiveValue {
     Number(f64),
@@ -72,6 +74,46 @@ pub enum JsonPrimitiveValue {
     Null,
 }
 
+/// A pull-based JSON parser which consumes an iterator over bytes and yields
+/// a valid sequence of [`JsonFragmentWithSpan`] values.
+///
+/// This API allows gathering statistics about the contents of large JSON documents without ever
+/// holding the entire document in memory.
+///
+/// [`JsonSession`] checks that the input is valid JSON. If an invalid sequence of tokens
+/// is detected, [`JsonSession::next`] yields an error. As a user of [`JsonSession`], you can
+/// rely on the fact that the yielded fragments will always describe a well-formed JSON document,
+/// at least the part of the document that has been consumed so far. (To clarify, there is no
+/// pre-pass which validates the entire document. Validation happens as you go, so
+/// [`JsonSession::next`] will happily return fragments as long as it hasn't arrived at the error yet.)
+///
+/// # Example
+///
+/// ```
+/// use json_session::{JsonSession, JsonFragment, JsonPrimitiveValue};
+///
+/// # fn main() {
+/// let input_str = r#"{"key1": 1234, "key2": [true], "key3": "value" }"#;
+/// let expected = &[
+///     JsonFragment::BeginObject,
+///     JsonFragment::ObjectProperty(String::from("key1")),
+///     JsonFragment::PrimitiveValue(JsonPrimitiveValue::Number(1234.0)),
+///     JsonFragment::ObjectProperty(String::from("key2")),
+///     JsonFragment::BeginArray,
+///     JsonFragment::PrimitiveValue(JsonPrimitiveValue::Boolean(true)),
+///     JsonFragment::EndArray,
+///     JsonFragment::ObjectProperty(String::from("key3")),
+///     JsonFragment::PrimitiveValue(JsonPrimitiveValue::String(String::from("value"))),
+///     JsonFragment::EndObject,
+/// ];
+/// let mut session = JsonSession::new(input_str.as_bytes().iter().cloned());
+/// for expected_fragment in expected {
+///     let fragment = session.next().unwrap().unwrap().fragment;
+///     assert_eq!(fragment, *expected_fragment);
+/// }
+/// assert!(session.next().unwrap().is_none());
+/// # }
+/// ```
 pub struct JsonSession<I: Iterator<Item = u8>> {
     tokenizer: JsonTokenizer<I>,
     state_stack: Vec<StateStackEntry>,
@@ -95,6 +137,7 @@ enum StateStackEntry {
 }
 
 impl<I: Iterator<Item = u8>> JsonSession<I> {
+    /// Create a new [`JsonSession`] from an iterator over bytes.
     pub fn new(it: I) -> Self {
         JsonSession {
             tokenizer: JsonTokenizer::new(it),
@@ -102,6 +145,13 @@ impl<I: Iterator<Item = u8>> JsonSession<I> {
         }
     }
 
+    /// Get the next [`JsonFragmentWithSpan`].
+    ///
+    /// Returns:
+    ///
+    /// - `Ok(Some(...))` in the regular case, with the next fragment.
+    /// - `Ok(None)` if the JSON document is complete and the end of the input has been reached.
+    /// - `Err(...)` if a invalid JSON is detected.
     pub fn next(&mut self) -> JsonParseResult<Option<JsonFragmentWithSpan>> {
         while let Some(entry) = self.state_stack.last().cloned() {
             match entry {
