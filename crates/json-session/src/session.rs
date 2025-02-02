@@ -90,8 +90,8 @@ enum StateStackEntry {
         token: JsonToken,
     },
     AfterObjectPropertyValue,
-    ArrayAfterOpen,
-    ArrayAfterItem,
+    AfterArrayOpen,
+    AfterArrayItem,
 }
 
 impl<I: Iterator<Item = u8>> JsonSession<I> {
@@ -120,7 +120,7 @@ impl<I: Iterator<Item = u8>> JsonSession<I> {
                         JsonToken::String(s) => JsonPrimitiveValue::String(s),
                         JsonToken::Null => JsonPrimitiveValue::Null,
                         JsonToken::ArrayOpen => {
-                            *self.state_stack.last_mut().unwrap() = StateStackEntry::ArrayAfterOpen;
+                            *self.state_stack.last_mut().unwrap() = StateStackEntry::AfterArrayOpen;
                             return Ok(Some(JsonFragment::BeginArray.with_span(span)));
                         }
                         JsonToken::ObjOpen => {
@@ -205,7 +205,7 @@ impl<I: Iterator<Item = u8>> JsonSession<I> {
                     *self.state_stack.last_mut().unwrap() =
                         StateStackEntry::BeforeObjectPropertyKeyWithToken { location, token };
                 }
-                StateStackEntry::ArrayAfterOpen => {
+                StateStackEntry::AfterArrayOpen => {
                     let location = self.tokenizer.location();
                     let token = self.tokenizer.next_token()?;
 
@@ -215,11 +215,11 @@ impl<I: Iterator<Item = u8>> JsonSession<I> {
                         return Ok(Some(JsonFragment::EndArray.with_span(span)));
                     }
 
-                    *self.state_stack.last_mut().unwrap() = StateStackEntry::ArrayAfterItem;
+                    *self.state_stack.last_mut().unwrap() = StateStackEntry::AfterArrayItem;
                     self.state_stack
                         .push(StateStackEntry::BeforeAnyValueWithToken { token, location });
                 }
-                StateStackEntry::ArrayAfterItem => {
+                StateStackEntry::AfterArrayItem => {
                     let location = self.tokenizer.location();
                     match self.tokenizer.next_token()? {
                         JsonToken::Comma => {}
@@ -238,7 +238,7 @@ impl<I: Iterator<Item = u8>> JsonSession<I> {
                         }
                     }
 
-                    *self.state_stack.last_mut().unwrap() = StateStackEntry::ArrayAfterItem;
+                    *self.state_stack.last_mut().unwrap() = StateStackEntry::AfterArrayItem;
                     self.state_stack.push(StateStackEntry::BeforeAnyValue);
                 }
             }
@@ -270,17 +270,17 @@ mod test {
     fn test_doc() {
         let s = r#"{"key1": 1234, "key2": [true], "key3": "value" }"#;
         let mut session = JsonSession::new(s.as_bytes().iter().cloned());
-            session.next().unwrap().unwrap().fragment; // JsonFragment::BeginObject
-            session.next().unwrap().unwrap().fragment; // JsonFragment::ObjectProperty(String::from("key1"))
-            session.next().unwrap().unwrap().fragment; // JsonFragment::PrimitiveValue(JsonPrimitiveValue::Number(1234.0));
-            session.next().unwrap().unwrap().fragment; // JsonFragment::ObjectProperty(String::from("key2"))
-            session.next().unwrap().unwrap().fragment; // JsonFragment::BeginArray
-            session.next().unwrap().unwrap().fragment; // JsonFragment::PrimitiveValue(JsonPrimitiveValue::Bool(true));
-            session.next().unwrap().unwrap().fragment; // JsonFragment::EndArray
-            session.next().unwrap().unwrap().fragment; // JsonFragment::ObjectProperty(String::from("key3"))
-            session.next().unwrap().unwrap().fragment; // JsonFragment::PrimitiveValue(JsonPrimitiveValue::String(String::from(value)));
-            session.next().unwrap().unwrap().fragment; // JsonFragment::EndObject
-            assert!(session.next().unwrap().is_none());
+        session.next().unwrap().unwrap().fragment; // JsonFragment::BeginObject
+        session.next().unwrap().unwrap().fragment; // JsonFragment::ObjectProperty(String::from("key1"))
+        session.next().unwrap().unwrap().fragment; // JsonFragment::PrimitiveValue(JsonPrimitiveValue::Number(1234.0));
+        session.next().unwrap().unwrap().fragment; // JsonFragment::ObjectProperty(String::from("key2"))
+        session.next().unwrap().unwrap().fragment; // JsonFragment::BeginArray
+        session.next().unwrap().unwrap().fragment; // JsonFragment::PrimitiveValue(JsonPrimitiveValue::Bool(true));
+        session.next().unwrap().unwrap().fragment; // JsonFragment::EndArray
+        session.next().unwrap().unwrap().fragment; // JsonFragment::ObjectProperty(String::from("key3"))
+        session.next().unwrap().unwrap().fragment; // JsonFragment::PrimitiveValue(JsonPrimitiveValue::String(String::from(value)));
+        session.next().unwrap().unwrap().fragment; // JsonFragment::EndObject
+        assert!(session.next().unwrap().is_none());
     }
 
     #[test]
