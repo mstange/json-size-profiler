@@ -159,8 +159,7 @@ impl<I: Iterator<Item = u8>> JsonSession<I> {
         while let Some(entry) = self.state_stack.last().cloned() {
             match entry {
                 StateStackEntry::BeforeAnyValue => {
-                    let location = self.tokenizer.location();
-                    let token = self.tokenizer.next_token()?;
+                    let (token, location) = self.tokenizer.next_token_and_location()?;
                     *self.state_stack.last_mut().unwrap() =
                         StateStackEntry::BeforeAnyValueWithToken { token, location };
                 }
@@ -195,8 +194,7 @@ impl<I: Iterator<Item = u8>> JsonSession<I> {
                     return Ok(Some(JsonFragment::PrimitiveValue(value).with_span(span)));
                 }
                 StateStackEntry::AfterObjectOpen => {
-                    let location = self.tokenizer.location();
-                    let token = self.tokenizer.next_token()?;
+                    let (token, location) = self.tokenizer.next_token_and_location()?;
                     if matches!(token, JsonToken::ObjClose) {
                         self.state_stack.pop();
                         let span = LocationSpan::new(location, self.tokenizer.location());
@@ -217,8 +215,7 @@ impl<I: Iterator<Item = u8>> JsonSession<I> {
                         }
                     };
 
-                    let colon_location = self.tokenizer.location();
-                    let token = self.tokenizer.next_token()?;
+                    let (token, colon_location) = self.tokenizer.next_token_and_location()?;
                     if token != JsonToken::Colon {
                         return Err(JsonParseError::new(
                             format!(
@@ -235,8 +232,8 @@ impl<I: Iterator<Item = u8>> JsonSession<I> {
                     return Ok(Some(JsonFragment::ObjectProperty(key).with_span(span)));
                 }
                 StateStackEntry::AfterObjectPropertyValue => {
-                    let location = self.tokenizer.location();
-                    match self.tokenizer.next_token()? {
+                    let (token, location) = self.tokenizer.next_token_and_location()?;
+                    match token {
                         JsonToken::Comma => {}
                         JsonToken::ObjClose => {
                             let span = LocationSpan::new(location, self.tokenizer.location());
@@ -253,14 +250,12 @@ impl<I: Iterator<Item = u8>> JsonSession<I> {
                         }
                     }
 
-                    let location = self.tokenizer.location();
-                    let token = self.tokenizer.next_token()?;
+                    let (token, location) = self.tokenizer.next_token_and_location()?;
                     *self.state_stack.last_mut().unwrap() =
                         StateStackEntry::BeforeObjectPropertyKeyWithToken { location, token };
                 }
                 StateStackEntry::AfterArrayOpen => {
-                    let location = self.tokenizer.location();
-                    let token = self.tokenizer.next_token()?;
+                    let (token, location) = self.tokenizer.next_token_and_location()?;
 
                     if token == JsonToken::ArrayClose {
                         self.state_stack.pop();
@@ -273,8 +268,8 @@ impl<I: Iterator<Item = u8>> JsonSession<I> {
                         .push(StateStackEntry::BeforeAnyValueWithToken { token, location });
                 }
                 StateStackEntry::AfterArrayItem => {
-                    let location = self.tokenizer.location();
-                    match self.tokenizer.next_token()? {
+                    let (token, location) = self.tokenizer.next_token_and_location()?;
+                    match token {
                         JsonToken::Comma => {}
                         JsonToken::ArrayClose => {
                             self.state_stack.pop();

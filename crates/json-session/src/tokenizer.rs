@@ -100,10 +100,7 @@ impl<I: Iterator<Item = u8>> JsonTokenizer<I> {
         }
     }
 
-    /// The location of the token that will be returned by the next call to `next_token()`.
-    ///
-    /// Well that's not entirely true if there is whitespace before the next token. In that
-    /// case, this wuld be the location of that white space.
+    /// The location after the end of the last token that was returned from `next_token()`.
     pub fn location(&self) -> Location {
         self.location
     }
@@ -346,6 +343,20 @@ impl<I: Iterator<Item = u8>> JsonTokenizer<I> {
         let b = self
             .peek_byte_skip_whitespace()
             .ok_or_else(|| self.eof_err())?;
+        self.next_token_with_peeked_byte(b)
+    }
+
+    /// Parses a token and returns it along with its location, or an error.
+    pub fn next_token_and_location(&mut self) -> JsonParseResult<(JsonToken, Location)> {
+        let b = self
+            .peek_byte_skip_whitespace()
+            .ok_or_else(|| self.eof_err())?;
+        let location = self.location;
+        let token = self.next_token_with_peeked_byte(b)?;
+        Ok((token, location))
+    }
+
+    fn next_token_with_peeked_byte(&mut self, b: u8) -> JsonParseResult<JsonToken> {
         let token = match b {
             b'[' => JsonToken::ArrayOpen,
             b']' => JsonToken::ArrayClose,
