@@ -300,6 +300,16 @@ impl<I: Iterator<Item = u8>> JsonSession<I> {
     }
 }
 
+#[cfg(feature = "fallible-iterator")]
+impl<I: Iterator<Item = u8>> fallible_iterator::FallibleIterator for JsonSession<I> {
+    type Item = JsonFragmentWithSpan;
+    type Error = JsonParseError;
+
+    fn next(&mut self) -> Result<Option<Self::Item>, Self::Error> {
+        self.next()
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
