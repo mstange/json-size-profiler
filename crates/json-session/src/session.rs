@@ -87,6 +87,9 @@ pub enum JsonPrimitiveValue {
 /// pre-pass which validates the entire document. Validation happens as you go, so
 /// [`JsonSession::next`] will happily return fragments as long as it hasn't arrived at the error yet.)
 ///
+/// When the optional feature `fallible-iterator` is used, [`JsonSession`] implements
+/// `fallible_iterator::FallibleIterator`.
+///
 /// # Example
 ///
 /// ```
