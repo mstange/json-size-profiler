@@ -154,7 +154,7 @@ impl<I: Iterator<Item = u8>> JsonSession<I> {
     ///
     /// - `Ok(Some(...))` in the regular case, with the next fragment.
     /// - `Ok(None)` if the JSON document is complete and the end of the input has been reached.
-    /// - `Err(...)` if a invalid JSON is detected.
+    /// - `Err(...)` if invalid JSON is detected.
     pub fn next(&mut self) -> JsonParseResult<Option<JsonFragmentWithSpan>> {
         while let Some(entry) = self.state_stack.last().cloned() {
             match entry {
