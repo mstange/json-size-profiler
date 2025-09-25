@@ -6,8 +6,8 @@ use std::{
 };
 
 use fxprof_processed_profile::{
-    CategoryColor, CategoryHandle, CpuDelta, Frame, FrameFlags, FrameInfo, Profile,
-    ReferenceTimestamp, SamplingInterval, StackHandle, ThreadHandle, Timestamp, WeightType,
+    Category, CategoryColor, CategoryHandle, CpuDelta, FrameFlags, Profile, ReferenceTimestamp,
+    SamplingInterval, StackHandle, ThreadHandle, TimelineUnit, Timestamp, WeightType,
 };
 use indexmap::IndexMap;
 use json_session::{JsonFragment, JsonPrimitiveValue, JsonSession};
@@ -169,7 +169,7 @@ fn make_json_piece_categories(profile: &mut Profile) -> FxHashMap<JsonPiece, Cat
     ];
     let mut map = FxHashMap::default();
     for (piece, name, color) in PIECES {
-        map.insert(piece, profile.add_category(name, color));
+        map.insert(piece, profile.handle_for_category(Category(name, color)));
     }
     map
 }
@@ -226,6 +226,7 @@ impl State {
         let process = profile.add_process("Bytes", 0, Timestamp::from_nanos_since_reference(0));
         let thread = profile.add_thread(process, 0, Timestamp::from_nanos_since_reference(0), true);
         profile.set_thread_samples_weight_type(thread, WeightType::Bytes);
+        profile.set_timeline_unit(TimelineUnit::Bytes);
 
         let categories = make_json_piece_categories(&mut profile);
 
@@ -281,7 +282,8 @@ impl State {
 
     fn flush(&mut self) {
         let mut synth_last_pos = self.aggregation_start_pos;
-        let mut synth_last_timestamp = Timestamp::from_nanos_since_reference(synth_last_pos * 1000);
+        let mut synth_last_timestamp =
+            Timestamp::from_millis_since_reference(synth_last_pos as f64);
         for (&stack_handle, &acc_delta) in &self.aggregation_map {
             let synth_pos = synth_last_pos + acc_delta;
             self.profile.add_sample(
@@ -291,9 +293,9 @@ impl State {
                 CpuDelta::ZERO,
                 0,
             );
-            let cpu_delta = CpuDelta::from_micros(acc_delta);
+            let cpu_delta = CpuDelta::from_millis(acc_delta as f64);
             let weight = acc_delta as i32;
-            let synth_timestamp = Timestamp::from_nanos_since_reference(synth_pos * 1000);
+            let synth_timestamp = Timestamp::from_millis_since_reference(synth_pos as f64);
             self.profile.add_sample(
                 self.thread,
                 synth_timestamp,
@@ -321,21 +323,21 @@ impl State {
             return *s;
         }
 
-        let label = self.profile.intern_string(&format!(
+        let label = self.profile.handle_for_string(&format!(
             "{} ({})",
             self.string_interner.resolve(parent_scope.path).unwrap(),
             piece.description()
         ));
         let category = self.categories[&piece];
-        let frame_info = FrameInfo {
-            frame: Frame::Label(label),
-            category_pair: category.into(),
-            flags: FrameFlags::empty(),
-        };
-        let frame_handle = self.profile.intern_frame(self.thread, frame_info);
+        let frame_handle = self.profile.handle_for_frame_with_label(
+            self.thread,
+            label,
+            category,
+            FrameFlags::empty(),
+        );
         let stack_handle =
             self.profile
-                .intern_stack(self.thread, parent_scope.stack_handle, frame_handle);
+                .handle_for_stack(self.thread, frame_handle, parent_scope.stack_handle);
         self.node_cache.insert(key, stack_handle);
         stack_handle
     }
