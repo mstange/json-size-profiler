@@ -20,6 +20,7 @@ include = [
 [dependencies]
 fxprof-processed-profile = { git = "https://github.com/mstange/samply", rev = "80859bb325f3129343e1052ffc6d681a0a248395" }
 json-session = { path = "./crates/json-session" }
+json-slabs = "0.1.0"
 serde_json = "1.0.120"
 smallvec = "1.13.2"
 indexmap = "2.7.0"
