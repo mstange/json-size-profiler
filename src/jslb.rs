@@ -1,6 +1,6 @@
 use fxprof_processed_profile::{CategoryColor, Profile};
 use json_session::{JsonFragment, JsonPrimitiveValue, JsonSession};
-use json_slabs::{SLAB_REF_KEY, SlabDirectory, SlabType};
+use json_slabs::{SlabDirectory, SlabType, SLAB_REF_KEY};
 
 use crate::state::State;
 

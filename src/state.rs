@@ -143,9 +143,7 @@ impl State {
     /// Handle for a top-level frame (used as the parent for a slab's inner
     /// stacks in JSLB mode). The frame belongs to the given color category.
     pub fn top_level_stack(&mut self, label: &str, color: CategoryColor) -> StackHandle {
-        let category = self
-            .profile
-            .handle_for_category(Category("Slab", color));
+        let category = self.profile.handle_for_category(Category("Slab", color));
         let label_handle = self.profile.handle_for_string(label);
         let frame_handle = self.profile.handle_for_frame_with_label(
             self.thread,
@@ -163,10 +161,7 @@ impl State {
     pub fn set_root_scope(&mut self, path: &str, stack_handle: Option<StackHandle>) {
         assert!(self.scope_stack.is_empty());
         let path = self.string_interner.get_or_intern(path);
-        self.root_scope = RootScope {
-            path,
-            stack_handle,
-        };
+        self.root_scope = RootScope { path, stack_handle };
         self.top_stack_handle = stack_handle;
     }
 
