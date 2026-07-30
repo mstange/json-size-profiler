@@ -130,7 +130,7 @@ fn main() {
     };
 
     let filename = path.file_name().unwrap().to_string_lossy();
-    let out_path = path.with_file_name(format!("{}-size-profile.json", &filename));
+    let out_path = path.with_file_name(format!("{}-size-profile.json", filename));
     let out_file = File::create(&out_path).unwrap();
     let writer = BufWriter::new(out_file);
     serde_json::to_writer(writer, &profile).unwrap();
